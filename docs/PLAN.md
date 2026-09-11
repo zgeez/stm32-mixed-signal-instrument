@@ -12,8 +12,9 @@
 | 7. Mixed capture | Common analog/digital timeline | Measured skew and jitter |
 | 8. Desktop | Plots, measurements, FFT, decoders and export | Synthetic-signal tests and responsive UI under load |
 
-Bring-up and AWG digital checks pass. USB communication is the next milestone.
-Analog output is not yet characterized. See [validation](validation.md).
+Bring-up and AWG digital checks pass. USB firmware, CLI, enumeration and command
+exchange pass on the board. Analog output is not yet characterized. See
+[validation](validation.md).
 
 ADC progression: 100 kS/s, 500 kS/s, then 1 MS/s if validated. GPIO acquisition
 starts at 1 MS/s, followed by 2 and 5 MS/s; 10 MS/s is an experiment. These are

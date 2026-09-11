@@ -21,11 +21,13 @@
 #include "dac.h"
 #include "dma.h"
 #include "tim.h"
+#include "usb_device.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "awg.h"
+#include "usb_control.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -92,6 +94,7 @@ int main(void)
   MX_DMA_Init();
   MX_DAC_Init();
   MX_TIM6_Init();
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
   uint32_t heartbeat = HAL_GetTick();
   if (awg_configure(AWG_SINE, 1000U) != AWG_OK || awg_start() != AWG_OK)
@@ -107,6 +110,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    usb_control_poll();
     if ((uint32_t)(HAL_GetTick() - heartbeat) >= 500U)
     {
       heartbeat = HAL_GetTick();

@@ -1,1 +1,1 @@
-"""PC-side entry point for the STM32 Mixed-Signal Instrument."""
+"""STM32 instrument client."""

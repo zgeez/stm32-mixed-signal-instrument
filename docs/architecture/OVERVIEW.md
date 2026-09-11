@@ -16,6 +16,7 @@ outside `Core/`; integration remains in generated USER CODE regions.
 | Board control | PD4 low holds audio codec in reset; PE3 high deselects motion sensor; PC0 high disables USB host power switch |
 | Debug | PA13/PA14 SWD; SysTick HAL timebase |
 | Heartbeat | Green LD4 on PD12; nonblocking 500 ms tick check |
+| USB device | OTG_FS CDC, CN5; PA9 VBUS, PA11 DM, PA12 DP; 48 MHz PLLQ, IRQ priority 6 |
 
 ## AWG
 
@@ -43,7 +44,6 @@ freeze TIM6 while the core is halted.
 | Scope timing | TIM2 TRGO, ADC DMA2 S0 C0 | TIM6 is not a regular ADC trigger |
 | Logic 0..7 | PE7..PE14, GPIOE IDR | Half-word reads, then `(sample >> 7) & 0xff` |
 | Logic DMA | TIM1 update, DMA2 S5 C6 | Bus latency affects sampling instant; rate must be measured |
-| USB | Native OTG_FS, CN5 | Separate from ST-LINK on CN1 |
 
 DMA2 can read AHB1 GPIO; DMA1 cannot. GPIO has no sample FIFO, so bus contention
 can cause jitter or missed samples without an overrun indication.
@@ -66,12 +66,14 @@ limited to 1.5 MB/s before overhead, so high-rate acquisition needs finite captu
 
 ## Software boundaries
 
-Timers determine sampling and output timing. DMA interrupts handle errors while
-the foreground loop performs noncritical work. The LED uses a nonblocking tick
-check. FreeRTOS is deferred until integration.
+`App/control` parses commands in the foreground. CDC receives one 64-byte packet
+at a time and defers rearming until consumption. TX storage remains owned by USB
+until completion. Reset/deconfiguration clears session data; the AWG keeps running.
+The LED uses a nonblocking tick check. FreeRTOS is deferred until integration.
 
-Desktop dependencies follow UI -> instrument model -> protocol -> transport.
-USB control, the GUI and acquisition transfers are pending.
+The desktop CLI calls an instrument model over a framed serial transport.
+The [protocol](../../protocol/README.md) defines commands and errors. GUI and
+acquisition transfers are pending.
 
 ## References
 

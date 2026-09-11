@@ -5,14 +5,15 @@ an STM32F407G-DISC1.
 
 **Status:** basic waveform generation on PA4: sine, triangle and square, with
 integer frequency settings from 1 to 1000 Hz. Startup selects a 1 kHz sine.
-USB control, acquisition and analog characterization remain open.
+USB control is implemented and validated over the native CDC port. Acquisition and
+analog characterization remain open.
 
 ## Platform
 
 - STM32F407VGT6, Cortex-M4F, 168 MHz
 - C, STM32 HAL, CMake, Ninja and Arm GNU Toolchain
 - Python desktop package; PySide6/pyqtgraph planned
-- Native USB CDC planned for device control and capture transfers
+- Native USB CDC for device control; capture transfers planned
 
 ## Repository
 
@@ -23,6 +24,20 @@ USB control, acquisition and analog characterization remain open.
 | `protocol/` | Shared communication contract |
 | `docs/` | Architecture and roadmap |
 | `scripts/` | Host validation |
+
+## Device control
+
+The Python CLI uses the native CDC port on CN5, separate from ST-LINK.
+Install the desktop package with `python -m pip install ./desktop`.
+
+```text
+stm32-msi --port COM5 status
+stm32-msi --port COM5 stop
+stm32-msi --port COM5 configure triangle 500
+stm32-msi --port COM5 start
+```
+
+Replace COM5 with the enumerated CDC port. [Protocol](protocol/README.md)
 
 ## Scope
 

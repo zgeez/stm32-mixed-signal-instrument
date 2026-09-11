@@ -12,7 +12,7 @@ def test_package_imports():
 
 def test_module_entry_point():
     result = subprocess.run(
-        [sys.executable, "-m", "stm32_msi"], capture_output=True, text=True, check=True
+        [sys.executable, "-m", "stm32_msi", "--help"], capture_output=True, text=True, check=True
     )
-    assert "device transport not implemented" in result.stdout
+    assert "--port" in result.stdout
     assert result.stderr == ""

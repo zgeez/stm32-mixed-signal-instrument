@@ -5,9 +5,11 @@ and Debug firmware unless stated otherwise. Host tests do not validate analog ou
 
 ## Automated checks
 
-- Debug and Release firmware builds pass.
-- Native C tests cover waveform shape, bounds and all 1..1000 Hz timer settings.
-- Desktop package tests and lint checks pass.
+- Debug/Release firmware builds and native C tests pass.
+- AWG tests cover table shape, bounds and all 1..1000 Hz timer settings.
+- Shared C/Python vectors cover framing, fragmentation and malformed input.
+- USB middleware stubs test backpressure, TX lifetime, partial-frame expiry and reset.
+- Python tests cover command encoding, reply correlation, errors and timeouts.
 
 ## Board checks — 2026-09-10
 
@@ -19,6 +21,10 @@ and Debug firmware unless stated otherwise. Host tests do not validate analog ou
 | DAC sequencing | 202 output-register samples matched, including startup and two table wraps |
 | AWG control | Invalid/active configuration rejected; ten stop/start cycles passed |
 | Forced DMA starvation | One underrun stopped TIM6; stop/configure/start recovered |
+| USB firmware | Flash verified; foreground loop and AWG startup passed |
+| USB CDC | COM4 enumeration, HELLO, capabilities, status, configuration, start/stop and error replies passed |
+| USB load | 300 status requests over 18.75 s while AWG ran; zero underruns/DMA errors |
+| USB robustness | Bytewise/combined frames, oversized input, version rejection, partial timeout and ten reconnects passed |
 
 Debugger halts freeze TIM6. These checks establish digital behavior, not uninterrupted
 analog timing. DAC sequence checks used manually generated TIM6 update events.

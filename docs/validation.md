@@ -10,6 +10,7 @@ and Debug firmware unless stated otherwise. Host tests do not validate analog ou
 - Shared C/Python vectors cover framing, fragmentation and malformed input.
 - USB middleware stubs test backpressure, TX lifetime, partial-frame expiry and reset.
 - Python tests cover command encoding, reply correlation, errors and timeouts.
+- GUI tests cover port selection, connection state, stable polling and AWG controls.
 
 ## Board checks — 2026-09-10
 
@@ -25,6 +26,7 @@ and Debug firmware unless stated otherwise. Host tests do not validate analog ou
 | USB CDC | COM4 enumeration, HELLO, capabilities, status, configuration, start/stop and error replies passed |
 | USB load | 300 status requests over 18.75 s while AWG ran; zero underruns/DMA errors |
 | USB robustness | Bytewise/combined frames, oversized input, version rejection, partial timeout and ten reconnects passed |
+| Desktop session | Native COM4 prioritized; threaded HELLO, capabilities and status exchange passed |
 
 Debugger halts freeze TIM6. These checks establish digital behavior, not uninterrupted
 analog timing. DAC sequence checks used manually generated TIM6 update events.

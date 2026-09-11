@@ -71,9 +71,10 @@ at a time and defers rearming until consumption. TX storage remains owned by USB
 until completion. Reset/deconfiguration clears session data; the AWG keeps running.
 The LED uses a nonblocking tick check. FreeRTOS is deferred until integration.
 
-The desktop CLI calls an instrument model over a framed serial transport.
-The [protocol](../../protocol/README.md) defines commands and errors. GUI and
-acquisition transfers are pending.
+The CLI and PySide6 application call the same instrument model over a framed serial
+transport. Serial requests run on one Qt worker thread so timeouts cannot block the
+interface. The [protocol](../../protocol/README.md) defines commands and errors.
+Acquisition views and transfers are pending.
 
 ## References
 

@@ -5,14 +5,15 @@ an STM32F407G-DISC1.
 
 **Status:** basic waveform generation on PA4: sine, triangle and square, with
 integer frequency settings from 1 to 1000 Hz. Startup selects a 1 kHz sine.
-USB control is implemented and validated over the native CDC port. Acquisition and
-analog characterization remain open.
+USB control is implemented and validated over the native CDC port. The desktop
+application controls the current AWG. Acquisition and analog characterization
+remain open.
 
 ## Platform
 
 - STM32F407VGT6, Cortex-M4F, 168 MHz
 - C, STM32 HAL, CMake, Ninja and Arm GNU Toolchain
-- Python desktop package; PySide6/pyqtgraph planned
+- Python desktop package with a PySide6 interface
 - Native USB CDC for device control; capture transfers planned
 
 ## Repository
@@ -27,8 +28,14 @@ analog characterization remain open.
 
 ## Device control
 
-The Python CLI uses the native CDC port on CN5, separate from ST-LINK.
-Install the desktop package with `python -m pip install ./desktop`.
+The desktop application and CLI use the native CDC port on CN5, separate from
+ST-LINK. Install with `python -m pip install ./desktop`, then run:
+
+```text
+stm32-msi-gui
+```
+
+The CLI remains available for direct checks:
 
 ```text
 stm32-msi --port COM5 status

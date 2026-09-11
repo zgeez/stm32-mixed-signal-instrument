@@ -6,7 +6,7 @@ if (-not (Test-Path -LiteralPath $pythonExe)) {
 }
 Push-Location $repoRoot
 try {
-    & $pythonExe -m pytest -c desktop/pyproject.toml desktop/tests
+    & $pythonExe -m pytest -p no:cacheprovider -c desktop/pyproject.toml desktop/tests
     if ($LASTEXITCODE -ne 0) { throw 'pytest failed' }
     & $pythonExe -m ruff check desktop
     if ($LASTEXITCODE -ne 0) { throw 'ruff check failed' }

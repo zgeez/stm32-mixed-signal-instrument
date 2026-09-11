@@ -5,20 +5,22 @@
 | 0. Bring-up | CubeMX/CMake firmware, SWD debug, Python package | Build, flash verification, breakpoints and clock registers |
 | 1. Basic AWG | TIM6-triggered DAC DMA; sine, triangle, square | Frequency checks, restart tests, zero underruns |
 | 2. USB | CDC control, versioned framing, desktop transport/model | C/Python conformance tests, malformed input and reconnect tests |
-| 3. Improved AWG | Second DAC, DDS, arbitrary tables, amplitude/offset/phase | Algorithm tests and refill-deadline measurements |
-| 4. Oscilloscope | Timer-triggered ADC DMA, finite/live capture, triggering | Sample counts/rates, loopback, pre-trigger and overrun tests |
-| 5. Logic analyzer | Eight GPIO inputs sampled through DMA2 | Pattern captures, pulse detection and sampling-jitter measurements |
-| 6. Integration | FreeRTOS orchestration and resource ownership | Concurrent-load tests, bounded queues, stack/RAM measurements |
-| 7. Mixed capture | Common analog/digital timeline | Measured skew and jitter |
-| 8. Desktop | Plots, measurements, FFT, decoders and export | Synthetic-signal tests and responsive UI under load |
+| 3. Desktop foundation | Device connection, AWG controls, status and errors | GUI tests, responsive serial operations and live board control |
+| 4. Improved AWG | Second DAC, DDS, arbitrary tables, amplitude/offset/phase and matching controls | Algorithm, UI and refill-deadline tests |
+| 5. Oscilloscope | Timer-triggered ADC DMA with plots, triggering and measurements | Sample-rate, loopback, plot and overrun tests |
+| 6. Logic analyzer | GPIO DMA capture with digital traces and decoders | Pattern, pulse, decoder and sampling-jitter tests |
+| 7. Integration | FreeRTOS ownership with unified device/session UI | Concurrent-load, reconnect, queue and responsiveness tests |
+| 8. Mixed capture | Common analog/digital timeline and synchronized display | Measured skew, jitter and display alignment |
+| 9. Characterization | Measured limits, error budgets and performance reports | Repeatable measurements with configuration and equipment recorded |
+| 10. Distribution | Packaged desktop releases, firmware installation and compatibility checks | Clean-machine install, flash, verification, reconnect and upgrade tests |
 
-Bring-up and AWG digital checks pass. USB firmware, CLI, enumeration and command
-exchange pass on the board. Analog output is not yet characterized. See
-[validation](validation.md).
+Bring-up, AWG digital checks and USB control pass. The Milestone 3 desktop foundation
+connects to the board, controls the AWG and polls status without blocking the UI.
+Analog output is not yet characterized. See [validation](validation.md).
 
 ADC progression: 100 kS/s, 500 kS/s, then 1 MS/s if validated. GPIO acquisition
 starts at 1 MS/s, followed by 2 and 5 MS/s; 10 MS/s is an experiment. These are
 validation targets, not specifications. Higher ADC rates require a clock review.
 
-Validate each subsystem before concurrent operation. CI covers host tests and
-firmware compilation; board measurements are recorded separately.
+Each firmware milestone includes its desktop controls and host tests. Validate each
+subsystem before concurrent operation. Board measurements are recorded separately.

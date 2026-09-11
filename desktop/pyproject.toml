@@ -7,13 +7,14 @@ name = "stm32-msi-desktop"
 version = "0.1.0"
 description = "PC software for the STM32 Mixed-Signal Instrument"
 requires-python = ">=3.11"
-dependencies = ["pyserial>=3.5,<4"]
+dependencies = ["pyserial>=3.5,<4", "PySide6>=6.8,<7"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
 
 [project.scripts]
 stm32-msi = "stm32_msi.__main__:main"
+stm32-msi-gui = "stm32_msi.gui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

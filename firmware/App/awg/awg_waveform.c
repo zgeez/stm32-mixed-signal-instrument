@@ -3,52 +3,121 @@
 #include <math.h>
 #include <stddef.h>
 
-bool awg_build_lut(awg_waveform_t waveform, uint16_t samples[AWG_SAMPLE_COUNT])
+#define PHASE_SCALE 4294967296ULL
+
+static int16_t sine_table[256];
+static bool sine_table_ready;
+
+static uint32_t scale_permille(uint16_t value)
 {
-    if (samples == NULL || waveform < AWG_SINE || waveform > AWG_SQUARE) {
-        return false;
-    }
-    for (uint32_t i = 0; i < AWG_SAMPLE_COUNT; ++i) {
-        switch (waveform) {
-        case AWG_SINE:
-            samples[i] =
-                (uint16_t)(2048.0f +
-                           1536.0f * sinf(6.283185307179586f * (float)i / AWG_SAMPLE_COUNT) + 0.5f);
-            break;
-        case AWG_TRIANGLE: {
-            uint32_t ramp = i < AWG_SAMPLE_COUNT / 2U ? i : AWG_SAMPLE_COUNT - i;
-            samples[i] = (uint16_t)(AWG_LOW_CODE + (AWG_HIGH_CODE - AWG_LOW_CODE) * ramp /
-                                                       (AWG_SAMPLE_COUNT / 2U));
-            break;
-        }
-        case AWG_SQUARE:
-            samples[i] = i < AWG_SAMPLE_COUNT / 2U ? AWG_HIGH_CODE : AWG_LOW_CODE;
-            break;
-        }
-    }
-    return true;
+    uint32_t scaled = (4096U * value + 500U) / 1000U;
+    return scaled > AWG_DAC_MAX_CODE ? AWG_DAC_MAX_CODE : scaled;
 }
 
-bool awg_calculate_timing(uint32_t timer_hz, uint32_t output_hz, awg_timing_t *timing)
+static void prepare_sine_table(void)
 {
-    if (timing == NULL || output_hz < AWG_MIN_HZ || output_hz > AWG_MAX_HZ) {
+    if (sine_table_ready) {
+        return;
+    }
+    for (uint32_t i = 0; i < 256U; ++i) {
+        sine_table[i] =
+            (int16_t)lroundf(32767.0f * sinf(6.283185307179586f * (float)i / 256.0f));
+    }
+    sine_table_ready = true;
+}
+
+bool awg_config_valid(const awg_config_t *config, uint16_t arbitrary_length)
+{
+    if (config == NULL || config->waveform < AWG_SINE || config->waveform >= AWG_WAVEFORM_COUNT ||
+        config->frequency_millihz < AWG_MIN_MILLIHZ ||
+        config->frequency_millihz > AWG_MAX_MILLIHZ || config->amplitude_permille > 1000U ||
+        config->offset_permille > 1000U || config->phase_decidegrees >= 3600U) {
         return false;
     }
-    uint64_t sample_hz = (uint64_t)output_hz * AWG_SAMPLE_COUNT;
-    if (timer_hz < sample_hz) {
+    if (config->waveform == AWG_ARBITRARY &&
+        (arbitrary_length < 2U || arbitrary_length > AWG_ARBITRARY_MAX_SAMPLES)) {
         return false;
     }
-    /* Smallest prescaler that lets the sample period fit the 16-bit counter. */
-    uint64_t prescale = ((uint64_t)timer_hz + sample_hz * 65536U - 1U) / (sample_hz * 65536U);
-    uint64_t divisor = sample_hz * prescale;
-    uint64_t ticks = ((uint64_t)timer_hz + divisor / 2U) / divisor;
-    if (prescale > 65536U || ticks == 0U || ticks > 65536U) {
+    uint32_t span = scale_permille(config->amplitude_permille);
+    uint32_t center = scale_permille(config->offset_permille);
+    uint32_t lower = (span + 1U) / 2U;
+    return center >= lower && center + span - lower <= AWG_DAC_MAX_CODE;
+}
+
+bool awg_generator_init(awg_generator_t *generator, const awg_config_t *config,
+                        const uint16_t *arbitrary, uint16_t arbitrary_length)
+{
+    if (generator == NULL || !awg_config_valid(config, arbitrary_length) ||
+        (config->waveform == AWG_ARBITRARY && arbitrary == NULL)) {
         return false;
     }
-    uint64_t cycle_ticks = prescale * ticks * AWG_SAMPLE_COUNT;
-    timing->prescaler = (uint16_t)(prescale - 1U);
-    timing->period = (uint16_t)(ticks - 1U);
-    timing->actual_millihz =
-        (uint32_t)(((uint64_t)timer_hz * 1000U + cycle_ticks / 2U) / cycle_ticks);
-    return true;
+    prepare_sine_table();
+    generator->config = *config;
+    generator->phase = (uint32_t)(((uint64_t)config->phase_decidegrees * PHASE_SCALE + 1800U) /
+                                  3600U);
+    generator->phase_increment =
+        (uint32_t)(((uint64_t)config->frequency_millihz * PHASE_SCALE +
+                    (uint64_t)AWG_SAMPLE_RATE_HZ * 500U) /
+                   ((uint64_t)AWG_SAMPLE_RATE_HZ * 1000U));
+    generator->span = (uint16_t)scale_permille(config->amplitude_permille);
+    uint16_t center = (uint16_t)scale_permille(config->offset_permille);
+    generator->low = (uint16_t)(center - (generator->span + 1U) / 2U);
+    generator->arbitrary = arbitrary;
+    generator->arbitrary_length = arbitrary_length;
+    return generator->phase_increment != 0U;
+}
+
+uint32_t awg_actual_millihz(const awg_generator_t *generator)
+{
+    if (generator == NULL) {
+        return 0U;
+    }
+    return (uint32_t)(((uint64_t)generator->phase_increment * AWG_SAMPLE_RATE_HZ * 1000U +
+                       PHASE_SCALE / 2U) /
+                      PHASE_SCALE);
+}
+
+static uint16_t normalized_sample(const awg_generator_t *generator)
+{
+    uint16_t phase = (uint16_t)(generator->phase >> 16U);
+    switch (generator->config.waveform) {
+    case AWG_SINE:
+        return (uint16_t)((int32_t)sine_table[generator->phase >> 24U] + 32768);
+    case AWG_TRIANGLE:
+        return phase < 32768U ? (uint16_t)(phase * 2U)
+                              : (uint16_t)((65535U - phase) * 2U);
+    case AWG_SQUARE:
+        return (generator->phase & 0x80000000U) == 0U ? UINT16_MAX : 0U;
+    case AWG_SAWTOOTH:
+        return phase;
+    case AWG_DC:
+        return 32768U;
+    case AWG_ARBITRARY: {
+        uint16_t index =
+            (uint16_t)(((uint64_t)generator->phase * generator->arbitrary_length) >> 32U);
+        return (uint16_t)(((uint32_t)generator->arbitrary[index] * UINT16_MAX + 2047U) /
+                          AWG_DAC_MAX_CODE);
+    }
+    default:
+        return 0U;
+    }
+}
+
+uint16_t awg_generator_next(awg_generator_t *generator)
+{
+    uint32_t code = generator->low +
+                    ((uint32_t)normalized_sample(generator) * generator->span + 32767U) /
+                        UINT16_MAX;
+    generator->phase += generator->phase_increment;
+    return (uint16_t)code;
+}
+
+void awg_generator_render(awg_generator_t *generator, uint16_t *samples, uint16_t count)
+{
+    if (generator == NULL || samples == NULL) {
+        return;
+    }
+    for (uint16_t i = 0; i < count; ++i) {
+        samples[i] = awg_generator_next(generator);
+    }
 }

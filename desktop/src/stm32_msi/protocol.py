@@ -16,6 +16,10 @@ class Command(IntEnum):
     AWG_START = 4
     AWG_STOP = 5
     STATUS = 6
+    AWG_CONFIG_EXT = 7
+    AWG_STATUS_EXT = 8
+    AWG_UPLOAD = 9
+    AWG_COMMIT = 10
 
 
 @dataclass(frozen=True)

@@ -1,8 +1,7 @@
 #include "awg_waveform.h"
 
-#include <math.h>
 #include <stdio.h>
-#include <string.h>
+#include <stdlib.h>
 
 #define CHECK(condition) \
     do { \
@@ -12,64 +11,124 @@
         } \
     } while (0)
 
+static awg_config_t config(awg_waveform_t waveform)
+{
+    return (awg_config_t){.waveform = waveform,
+                          .frequency_millihz = 1000000U,
+                          .amplitude_permille = 750U,
+                          .offset_permille = 500U,
+                          .phase_decidegrees = 0U};
+}
+
+static int test_frequency(void)
+{
+    awg_generator_t generator;
+    awg_config_t settings = config(AWG_SINE);
+    for (uint32_t millihz = AWG_MIN_MILLIHZ; millihz <= AWG_MAX_MILLIHZ;
+         millihz += 997U) {
+        settings.frequency_millihz = millihz;
+        CHECK(awg_generator_init(&generator, &settings, NULL, 0U));
+        CHECK(abs((int)awg_actual_millihz(&generator) - (int)millihz) <= 1);
+    }
+    settings.frequency_millihz = AWG_MAX_MILLIHZ;
+    CHECK(awg_generator_init(&generator, &settings, NULL, 0U));
+    CHECK(generator.phase_increment == 214748365U);
+    return 0;
+}
+
+static int test_shapes(void)
+{
+    awg_generator_t generator;
+    uint16_t samples[400];
+    for (int shape = AWG_SINE; shape <= AWG_DC; ++shape) {
+        awg_config_t settings = config((awg_waveform_t)shape);
+        CHECK(awg_generator_init(&generator, &settings, NULL, 0U));
+        awg_generator_render(&generator, samples, 400U);
+        for (unsigned i = 0U; i < 400U; ++i) {
+            CHECK(samples[i] >= 512U && samples[i] <= 3584U);
+        }
+        generator.phase = 0U;
+        uint16_t start = awg_generator_next(&generator);
+        generator.phase = 0x40000000U;
+        uint16_t quarter = awg_generator_next(&generator);
+        generator.phase = 0x80000000U;
+        uint16_t half = awg_generator_next(&generator);
+        generator.phase = 0xc0000000U;
+        uint16_t three_quarters = awg_generator_next(&generator);
+        if (shape == AWG_SINE) {
+            CHECK(start == 2048U);
+            CHECK(quarter >= 3583U);
+            CHECK(half >= 2047U && half <= 2049U);
+            CHECK(three_quarters <= 513U);
+        } else if (shape == AWG_TRIANGLE) {
+            CHECK(start == 512U);
+            CHECK(half >= 3583U);
+        } else if (shape == AWG_SQUARE) {
+            CHECK(start == 3584U && quarter == 3584U);
+            CHECK(half == 512U && three_quarters == 512U);
+        } else if (shape == AWG_SAWTOOTH) {
+            CHECK(start == 512U);
+            CHECK(three_quarters > 2800U);
+        } else {
+            CHECK(start == 2048U && three_quarters == 2048U);
+        }
+    }
+    return 0;
+}
+
+static int test_scaling_and_phase(void)
+{
+    awg_generator_t generator;
+    awg_config_t settings = config(AWG_SQUARE);
+    settings.amplitude_permille = 500U;
+    settings.offset_permille = 250U;
+    settings.phase_decidegrees = 1800U;
+    CHECK(awg_generator_init(&generator, &settings, NULL, 0U));
+    CHECK(awg_generator_next(&generator) == 0U);
+    settings.phase_decidegrees = 0U;
+    CHECK(awg_generator_init(&generator, &settings, NULL, 0U));
+    CHECK(awg_generator_next(&generator) == 2048U);
+
+    settings.amplitude_permille = 501U;
+    CHECK(!awg_config_valid(&settings, 0U));
+    settings.amplitude_permille = 1000U;
+    settings.offset_permille = 500U;
+    CHECK(awg_config_valid(&settings, 0U));
+    settings.offset_permille = 499U;
+    CHECK(!awg_config_valid(&settings, 0U));
+    settings.offset_permille = 500U;
+    settings.phase_decidegrees = 3600U;
+    CHECK(!awg_config_valid(&settings, 0U));
+    settings.phase_decidegrees = 0U;
+    settings.waveform = (awg_waveform_t)-1;
+    CHECK(!awg_config_valid(&settings, 0U));
+    return 0;
+}
+
+static int test_arbitrary(void)
+{
+    const uint16_t table[] = {0U, 4095U, 2048U, 1024U};
+    awg_config_t settings = config(AWG_ARBITRARY);
+    settings.frequency_millihz = 250000U;
+    settings.amplitude_permille = 1000U;
+    awg_generator_t generator;
+    CHECK(awg_generator_init(&generator, &settings, table, 4U));
+    uint16_t expected[] = {0U, 4095U, 2048U, 1024U};
+    for (unsigned i = 0U; i < 4U; ++i) {
+        generator.phase = i * 0x40000000U;
+        CHECK(abs((int)awg_generator_next(&generator) - (int)expected[i]) <= 1);
+    }
+    CHECK(!awg_generator_init(&generator, &settings, NULL, 4U));
+    CHECK(!awg_generator_init(&generator, &settings, table, 1U));
+    return 0;
+}
+
 int main(void)
 {
-    uint16_t samples[AWG_SAMPLE_COUNT];
-    for (int shape = AWG_SINE; shape <= AWG_SQUARE; ++shape) {
-        CHECK(awg_build_lut((awg_waveform_t)shape, samples));
-        unsigned high_count = 0U;
-        unsigned transitions = 0U;
-        for (unsigned i = 0; i < AWG_SAMPLE_COUNT; ++i) {
-            CHECK(samples[i] >= AWG_LOW_CODE && samples[i] <= AWG_HIGH_CODE);
-            if (shape == AWG_SQUARE) {
-                CHECK(samples[i] == AWG_LOW_CODE || samples[i] == AWG_HIGH_CODE);
-                high_count += samples[i] == AWG_HIGH_CODE;
-                transitions += samples[i] != samples[(i + 1U) % AWG_SAMPLE_COUNT];
-            } else {
-                int sum = samples[i] + samples[(i + AWG_SAMPLE_COUNT / 2U) % AWG_SAMPLE_COUNT];
-                CHECK(sum >= 4095 && sum <= 4097);
-                int delta = (int)samples[i] - samples[(i + 1U) % AWG_SAMPLE_COUNT];
-                CHECK(delta >= -97 && delta <= 97);
-            }
-        }
-        if (shape == AWG_SINE) {
-            CHECK(samples[0] == 2048 && samples[25] == AWG_HIGH_CODE);
-            CHECK(samples[50] == 2048 && samples[75] == AWG_LOW_CODE);
-        } else if (shape == AWG_TRIANGLE) {
-            CHECK(samples[0] == AWG_LOW_CODE && samples[50] == AWG_HIGH_CODE);
-            for (unsigned i = 1; i <= 50; ++i) {
-                CHECK(samples[i] > samples[i - 1]);
-            }
-            for (unsigned i = 51; i < 100; ++i) {
-                CHECK(samples[i] < samples[i - 1]);
-            }
-        } else {
-            CHECK(high_count == 50 && transitions == 2);
-        }
-    }
-    uint16_t saved[AWG_SAMPLE_COUNT];
-    memcpy(saved, samples, sizeof samples);
-    CHECK(!awg_build_lut((awg_waveform_t)-1, samples));
-    CHECK(!awg_build_lut((awg_waveform_t)3, samples));
-    CHECK(memcmp(saved, samples, sizeof samples) == 0);
-    CHECK(!awg_build_lut(AWG_SINE, NULL));
-
-    awg_timing_t timing;
-    for (uint32_t hz = AWG_MIN_HZ; hz <= AWG_MAX_HZ; ++hz) {
-        CHECK(awg_calculate_timing(84000000, hz, &timing));
-        double actual =
-            84000000.0 / ((timing.prescaler + 1.0) * (timing.period + 1.0) * AWG_SAMPLE_COUNT);
-        CHECK(fabs(actual - hz) / hz < 0.001);
-        CHECK(fabs(timing.actual_millihz - actual * 1000.0) <= 0.501);
-    }
-    CHECK(timing.prescaler == 0 && timing.period == 839);
-    CHECK(timing.actual_millihz == 1000000);
-    CHECK(!awg_calculate_timing(84000000, 0, &timing));
-    CHECK(!awg_calculate_timing(84000000, 1001, &timing));
-    CHECK(!awg_calculate_timing(84000000, UINT32_MAX, &timing));
-    CHECK(!awg_calculate_timing(99, 1, &timing));
-    CHECK(!awg_calculate_timing(84000000, 1, NULL));
-    CHECK(awg_calculate_timing(UINT32_MAX, 1, &timing));
-    puts("Waveforms, invalid inputs and 1..1000 Hz timing sweep passed.");
+    CHECK(test_frequency() == 0);
+    CHECK(test_shapes() == 0);
+    CHECK(test_scaling_and_phase() == 0);
+    CHECK(test_arbitrary() == 0);
+    puts("DDS frequency, waveforms, scaling, phase and arbitrary playback passed.");
     return 0;
 }

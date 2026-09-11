@@ -10,9 +10,9 @@ outside `Core/`; integration remains in generated USER CODE regions.
 | --- | --- |
 | Clock | 8 MHz HSE; PLL M=8, N=336, P=2, Q=7 |
 | Buses | HCLK 168 MHz; APB1 42 MHz; APB2 84 MHz |
-| TIM6 | 84 MHz timer clock; PSC=0, ARR=839; update TRGO |
-| DAC1 | PA4, TIM6 trigger, output buffer enabled |
-| DMA | DMA1 Stream 5 Channel 7; circular, half-word, memory-to-peripheral |
+| TIM6 | 84 MHz timer clock; PSC=0, ARR=209; 400 kHz update TRGO |
+| DAC1/2 | PA4/PA5, TIM6 trigger, output buffers enabled |
+| DMA | DAC1: DMA1 S5 C7; DAC2: DMA1 S6 C7; circular half-word transfers |
 | Board control | PD4 low holds audio codec in reset; PE3 high deselects motion sensor; PC0 high disables USB host power switch |
 | Debug | PA13/PA14 SWD; SysTick HAL timebase |
 | Heartbeat | Green LD4 on PD12; nonblocking 500 ms tick check |
@@ -20,27 +20,25 @@ outside `Core/`; integration remains in generated USER CODE regions.
 
 ## AWG
 
-Boot starts a 1 kHz sine. Sine, triangle and 50% square use 100-sample tables
-at integer frequency settings from 1 to 1000 Hz:
+Boot starts a 1 kHz sine on PA4. TIM6 supplies a fixed 400 kS/s trigger; each output
+uses a 32-bit phase accumulator with 1 mHz configuration units. Sine, triangle, square,
+sawtooth, DC and 2..256-sample arbitrary tables share the same 1 Hz to 20 kHz path.
 
-`f_out = 84 MHz / ((PSC + 1) * (ARR + 1) * 100)`
+Each channel owns a 1024-sample circular DMA buffer. Half-transfer and completion
+interrupts release the inactive half only after every active DMA stream has crossed the
+boundary. The foreground loop refills it; reuse before completion increments the refill
+miss counter and stops TIM6. The 512-sample half gives a 1.28 ms refill deadline.
 
-Timer rounding contributes less than 0.1% error across this range. Codes 512..3584
-give an ideal average near VREF+/2 and peak-to-peak voltage of 0.75 VREF+.
-Analog accuracy is unmeasured; PA4's audio connection can load the output.
-
-`App/awg` owns TIM6, DAC1 and the 200-byte DMA table in main SRAM. Configuration
-requires a stopped generator. DMA repeats the table without refill interrupts.
-Errors stop TIM6 and latch FAULT; stop releases DMA before recovery. Counters persist
-until reset. Stop disables the DAC; it does not hold PA4 at zero volts. Debug builds
-freeze TIM6 while the core is halted.
+Amplitude is peak-to-peak and offset is the center, normalized to DAC full scale. Invalid
+combinations that exceed codes 0..4095 are rejected. Both channels start from their
+configured phase on the same timer. PA4's audio connection can load DAC1; PA5 also drives
+the deselected motion sensor's clock trace. Analog accuracy remains unmeasured.
 
 ## Planned acquisition resources
 
 | Function | Candidate | Constraint |
 | --- | --- | --- |
 | Analog CH1/CH2 | PC4/PC5, ADC1/2 IN14/15 | No ADC3 mapping; triple interleaving needs another pin |
-| DAC CH2 | PA5 | Shares the motion sensor's SPI clock connection |
 | Scope timing | TIM2 TRGO, ADC DMA2 S0 C0 | TIM6 is not a regular ADC trigger |
 | Logic 0..7 | PE7..PE14, GPIOE IDR | Half-word reads, then `(sample >> 7) & 0xff` |
 | Logic DMA | TIM1 update, DMA2 S5 C6 | Bus latency affects sampling instant; rate must be measured |
@@ -83,3 +81,4 @@ Acquisition views and transfers are pending.
 - [UM1472: board manual](https://www.st.com/resource/en/user_manual/um1472-discovery-kit-with-stm32f407vg-mcu-stmicroelectronics.pdf): board connections and headers.
 - [MB997 E-01 schematic](https://www.st.com/resource/en/schematic_pack/mb997-f407vgt6-e01_schematic.pdf): audio, motion sensor and USB wiring.
 - [AN4031: DMA](https://www.st.com/resource/en/application_note/an4031-using-the-stm32f2-stm32f4-and-stm32f7-series-dma-controller-stmicroelectronics.pdf): arbitration and transfer latency.
+- [AN4566: DAC performance](https://www.st.com/resource/en/application_note/an4566-how-to-extend-the-dac-performance-on-stm32-mcus-stmicroelectronics.pdf): update-rate limits and high-speed output stages.

@@ -31,6 +31,22 @@ class SerialStub:
             payload = bytes([self.reply_status])
             if request.command == Command.STATUS:
                 payload += struct.pack("<BBIIII", 2, 0, 1000, 1000000, 0, 0)
+            elif request.command == Command.AWG_STATUS_EXT:
+                payload += struct.pack(
+                    "<BBBIIHHHIIIH",
+                    1,
+                    request.payload[0],
+                    3,
+                    123456,
+                    123455,
+                    600,
+                    500,
+                    900,
+                    1,
+                    2,
+                    3,
+                    17,
+                )
             else:
                 payload += b"STM32-MSI"
             stale = Frame(request.command | 0x80, (request.sequence - 1) & 0xFFFF, b"\0old")
@@ -78,9 +94,44 @@ def test_failed_exchange_closes_connection(transport, mode):
 
 def test_configuration_validation_and_encoding(transport):
     device = Instrument(transport)
-    for waveform, hz in [("bad", 100), ("sine", 0), ("sine", 1001)]:
+    for waveform, hz in [("bad", 100), ("sine", 0), ("sine", 20_001)]:
         with pytest.raises(ValueError):
             device.configure(waveform, hz)
     assert not transport.serial.requests
     device.configure("triangle", 500)
     assert transport.serial.requests[-1].payload == struct.pack("<BI", 1, 500)
+
+
+def test_extended_configuration_status_and_upload(transport):
+    device = Instrument(transport)
+    device.configure_channel(1, "sawtooth", 123.456, 60, 50, 90)
+    request = transport.serial.requests[-1]
+    assert request.command == Command.AWG_CONFIG_EXT
+    assert request.payload == struct.pack("<BBIHHH", 1, 3, 123456, 600, 500, 900)
+
+    status = device.channel_status(1)
+    assert status.channel == 1
+    assert status.requested_hz == pytest.approx(123.456)
+    assert status.refill_misses == 3
+    assert status.arbitrary_length == 17
+
+    samples = list(range(30))
+    device.upload_arbitrary(0, samples)
+    uploads = [frame for frame in transport.serial.requests if frame.command == Command.AWG_UPLOAD]
+    assert [frame.payload[3] for frame in uploads] == [14, 14, 2]
+    assert transport.serial.requests[-1].command == Command.AWG_COMMIT
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        (2, "sine", 100, 75, 50, 0),
+        (0, "bad", 100, 75, 50, 0),
+        (0, "sine", 0.5, 75, 50, 0),
+        (0, "sine", 100, 100, 25, 0),
+        (0, "sine", 100, 75, 50, 360),
+    ],
+)
+def test_extended_configuration_validation(transport, settings):
+    with pytest.raises(ValueError):
+        Instrument(transport).configure_channel(*settings)

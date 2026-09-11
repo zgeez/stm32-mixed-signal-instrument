@@ -14,6 +14,6 @@ add_executable(firmware)
 add_subdirectory(cmake/stm32cubemx)
 target_link_libraries(firmware stm32cubemx)
 target_sources(firmware PRIVATE
-    App/awg/awg.c App/awg/awg_waveform.c
+    App/awg/awg.c App/awg/awg_waveform.c App/awg/awg_refill.c
     App/control/protocol.c App/control/commands.c App/control/usb_control.c)
 target_include_directories(firmware PRIVATE App/awg App/control)

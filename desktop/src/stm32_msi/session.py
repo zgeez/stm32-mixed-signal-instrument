@@ -20,6 +20,7 @@ class _DeviceWorker(QObject):
         self._transport_factory = transport_factory
         self._transport = None
         self._instrument = None
+        self._capabilities = {}
 
     @Slot(str)
     def open(self, port: str) -> None:
@@ -32,8 +33,9 @@ class _DeviceWorker(QObject):
             if name != "STM32-MSI":
                 raise OSError(f"Unexpected device: {name}")
             capabilities = self._instrument.capabilities()
-            status = self._instrument.status()
-            self.connected.emit(name, capabilities, status)
+            self._capabilities = capabilities
+            statuses = self._read_statuses()
+            self.connected.emit(name, capabilities, statuses)
         except (OSError, RuntimeError, ValueError) as exc:
             self.error.emit(str(exc))
             self._close(True)
@@ -50,9 +52,33 @@ class _DeviceWorker(QObject):
     def refresh(self) -> None:
         self._run(lambda device: None, report_busy=False)
 
-    @Slot(str, int)
-    def configure(self, waveform: str, frequency_hz: int) -> None:
-        self._run(lambda device: device.configure(waveform, frequency_hz))
+    @Slot(int, str, float, float, float, float, object)
+    def configure(
+        self,
+        channel: int,
+        waveform: str,
+        frequency_hz: float,
+        amplitude_percent: float,
+        offset_percent: float,
+        phase_degrees: float,
+        samples,
+    ) -> None:
+        def apply(device):
+            if self._capabilities.get("channels", 1) < 2:
+                device.configure(waveform, round(frequency_hz))
+                return
+            if samples is not None:
+                device.upload_arbitrary(channel, samples)
+            device.configure_channel(
+                channel,
+                waveform,
+                frequency_hz,
+                amplitude_percent,
+                offset_percent,
+                phase_degrees,
+            )
+
+        self._run(apply)
 
     @Slot()
     def start(self) -> None:
@@ -72,7 +98,7 @@ class _DeviceWorker(QObject):
             self.busy_changed.emit(True)
         try:
             command(self._instrument)
-            self.status_changed.emit(self._instrument.status())
+            self.status_changed.emit(self._read_statuses())
         except (OSError, RuntimeError, ValueError) as exc:
             self.error.emit(str(exc))
             if isinstance(exc, OSError):
@@ -86,8 +112,17 @@ class _DeviceWorker(QObject):
             self._transport.close()
         self._transport = None
         self._instrument = None
+        self._capabilities = {}
         if notify:
             self.disconnected.emit()
+
+    def _read_statuses(self):
+        if self._capabilities.get("channels", 1) >= 2:
+            return [
+                self._instrument.channel_status(channel)
+                for channel in range(self._capabilities["channels"])
+            ]
+        return [self._instrument.status()]
 
 
 class DeviceSession(QObject):
@@ -100,7 +135,7 @@ class DeviceSession(QObject):
     _open_requested = Signal(str)
     _close_requested = Signal()
     _refresh_requested = Signal()
-    _configure_requested = Signal(str, int)
+    _configure_requested = Signal(int, str, float, float, float, float, object)
     _start_requested = Signal()
     _stop_requested = Signal()
 
@@ -133,8 +168,25 @@ class DeviceSession(QObject):
     def refresh(self) -> None:
         self._refresh_requested.emit()
 
-    def configure(self, waveform: str, frequency_hz: int) -> None:
-        self._configure_requested.emit(waveform, frequency_hz)
+    def configure(
+        self,
+        channel: int,
+        waveform: str,
+        frequency_hz: float,
+        amplitude_percent: float,
+        offset_percent: float,
+        phase_degrees: float,
+        samples=None,
+    ) -> None:
+        self._configure_requested.emit(
+            channel,
+            waveform,
+            frequency_hz,
+            amplitude_percent,
+            offset_percent,
+            phase_degrees,
+            samples,
+        )
 
     def start(self) -> None:
         self._start_requested.emit()

@@ -3,10 +3,11 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from stm32_msi.gui import MainWindow, Port
+from stm32_msi.gui import MainWindow, Port, parse_sample_table
 from stm32_msi.instrument import Status
 
 
@@ -30,8 +31,8 @@ class FakeSession(QObject):
     def refresh(self):
         self.calls.append(("refresh",))
 
-    def configure(self, waveform, frequency):
-        self.calls.append(("configure", waveform, frequency))
+    def configure(self, *settings):
+        self.calls.append(("configure", *settings))
 
     def start(self):
         self.calls.append(("start",))
@@ -57,8 +58,19 @@ def window(app):
     view.close()
 
 
-def ready_status():
-    return Status(1, 0, 1000, 1_000_000, 0, 0)
+def status(channel=0, state=1, waveform=0, frequency=1_000_000):
+    return Status(state, channel, waveform, frequency, frequency)
+
+
+def connect(view, session, app):
+    statuses = [status(0), status(1)]
+    session.connected.emit(
+        "STM32-MSI",
+        {"channels": 2, "waveforms": 63, "min_hz": 1, "max_hz": 20_000},
+        statuses,
+    )
+    session.busy_changed.emit(False)
+    app.processEvents()
 
 
 def test_instrument_port_is_selected_first(window):
@@ -68,74 +80,122 @@ def test_instrument_port_is_selected_first(window):
     assert not view.start_button.isEnabled()
 
 
-def test_connection_and_awg_controls(window, app):
+def test_both_outputs_are_visible_and_configurable(window, app):
     view, session = window
     view.connect_button.click()
     assert session.calls[-1] == ("connect", "COM4")
+    connect(view, session, app)
 
-    session.connected.emit(
-        "STM32-MSI",
-        {"min_hz": 1, "max_hz": 1000},
-        ready_status(),
-    )
-    session.busy_changed.emit(False)
-    app.processEvents()
-    assert view.connection_label.text() == "Connected"
-    assert view.state_label.text() == "Ready"
+    first, second = view.outputs
+    assert first.isVisibleTo(view)
+    assert second.isVisibleTo(view)
     assert view.start_button.isEnabled()
 
-    view.waveform_combo.setCurrentIndex(1)
-    view.frequency_dial.setValue(500)
-    assert view.frequency_spin.value() == 500
-    view.frequency_spin.setValue(501)
-    assert view.frequency_dial.value() == 501
-    view.configure_button.click()
-    assert session.calls[-1] == ("configure", "triangle", 501)
+    first.waveform.setCurrentIndex(3)
+    first.frequency.setValue(501.125)
+    first.amplitude.setValue(65)
+    first.offset.setValue(50)
+    first.phase.setValue(90)
+    first.apply.click()
+    assert session.calls[-1] == (
+        "configure",
+        0,
+        "sawtooth",
+        501.125,
+        65.0,
+        50.0,
+        90.0,
+        None,
+    )
+
+    session.busy_changed.emit(False)
+    second.waveform.setCurrentIndex(2)
+    second.frequency.setValue(2500)
+    second.apply.click()
+    assert session.calls[-1][1:5] == (1, "square", 2500.0, 75.0)
+
+
+def test_frequency_knob_is_linear_and_shift_is_fine(window, app):
+    view, session = window
+    connect(view, session, app)
+    dial = view.outputs[0].frequency_dial
+    spin = view.outputs[0].frequency
+
+    dial.setValue((dial.minimum() + dial.maximum()) // 2)
+    assert spin.value() == pytest.approx(10_000.5)
+
+    spin.setValue(501.125)
+    assert dial.value() == 501_125
+    QTest.keyClick(dial, Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+    assert spin.value() == pytest.approx(501.126)
+
+    QTest.keyClick(dial, Qt.Key.Key_Right)
+    assert spin.value() == pytest.approx(502.126)
+
+
+def test_both_statuses_update_together(window, app):
+    view, session = window
+    connect(view, session, app)
+    statuses = [
+        Status(1, 0, 0, 250_500, 250_499),
+        Status(1, 1, 2, 2_500_000, 2_500_001, 400, 500, 1800),
+    ]
+    session.status_changed.emit(statuses)
+    app.processEvents()
+
+    assert view.outputs[0].actual.text() == "250.499 Hz"
+    assert view.outputs[0].error.text() == "-0.001 Hz"
+    assert view.outputs[1].actual.text() == "2500.001 Hz"
+    assert view.outputs[1].error.text() == "+0.001 Hz"
+
+
+def test_arbitrary_table_parsing_and_configuration(window, app):
+    assert parse_sample_table("0, 0x800; 4095\n1024") == [0, 2048, 4095, 1024]
+    for text in ("1", "0, 4096", "0, nope"):
+        with pytest.raises(ValueError):
+            parse_sample_table(text)
+
+    view, session = window
+    connect(view, session, app)
+    panel = view.outputs[1]
+    panel.waveform.setCurrentIndex(5)
+    panel.apply.click()
+    assert "load an arbitrary table" in view.statusBar().currentMessage()
+    view._tables[1] = [0, 4095]
+    panel.set_table_count(2)
+    panel.apply.click()
+    assert session.calls[-1][-1] == [0, 4095]
 
 
 def test_running_status_enables_stop(window, app):
     view, session = window
-    session.connected.emit(
-        "STM32-MSI",
-        {"min_hz": 1, "max_hz": 1000},
-        Status(2, 2, 250, 250_000, 1, 0),
-    )
-    session.busy_changed.emit(False)
+    connect(view, session, app)
+    statuses = [
+        Status(2, 0, 0, 1_000_000, 1_000_000, refill_misses=2),
+        Status(2, 1, 2, 250_000, 249_999, refill_misses=2),
+    ]
+    session.status_changed.emit(statuses)
     app.processEvents()
-    assert view.state_label.text() == "Running"
-    assert view.waveform_label.text() == "Square"
-    assert view.actual_label.text() == "250.000 Hz"
-    assert view.frequency_error_label.text() == "+0.000 Hz (+0.000%)"
-    assert not view.configure_button.isEnabled()
-    assert not view.frequency_dial.isEnabled()
-    assert view.stop_button.isEnabled()
 
+    assert view.state_label.text() == "Running"
+    assert view.refill_miss_label.text() == "2"
+    assert not view.outputs[0].apply.isEnabled()
+    assert not view.outputs[1].frequency_dial.isEnabled()
+    assert view.stop_button.isEnabled()
     view.stop_button.click()
     assert session.calls[-1] == ("stop",)
 
 
-def test_background_poll_keeps_controls_stable(window, app):
+def test_background_poll_does_not_overlap(window, app):
     view, session = window
-    session.connected.emit(
-        "STM32-MSI",
-        {"min_hz": 1, "max_hz": 1000},
-        ready_status(),
-    )
-    session.busy_changed.emit(False)
-    app.processEvents()
-    assert view.start_button.isEnabled()
-
+    connect(view, session, app)
     view._poll()
     assert session.calls[-1] == ("refresh",)
-    assert view.start_button.isEnabled()
     refreshes = session.calls.count(("refresh",))
     view._poll()
     assert session.calls.count(("refresh",)) == refreshes
-
-    session.status_changed.emit(Status(1, 0, 998, 997_625, 0, 0))
+    session.status_changed.emit([status(0), status(1)])
     app.processEvents()
-    assert view.start_button.isEnabled()
-    assert view.frequency_error_label.text() == "-0.375 Hz (-0.038%)"
     view._poll()
     assert session.calls.count(("refresh",)) == refreshes + 1
 

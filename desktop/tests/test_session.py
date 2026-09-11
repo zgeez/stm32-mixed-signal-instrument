@@ -15,28 +15,39 @@ class TransportStub:
     def __init__(self, port):
         self.port = port
         self.state = 1
-        self.waveform = 0
-        self.frequency = 1000
+        self.waveforms = [0, 0]
+        self.frequencies = [1000, 1000]
         self.closed = False
 
     def request(self, command, payload=b""):
         if command == Command.HELLO:
             return b"STM32-MSI"
         if command == Command.CAPABILITIES:
-            return struct.pack("<BBIIB", 1, 7, 1, 1000, 100)
+            return struct.pack("<BBIIB", 2, 63, 1, 1000, 100)
         if command == Command.AWG_CONFIG:
-            self.waveform, self.frequency = struct.unpack("<BI", payload)
+            self.waveforms[0], self.frequencies[0] = struct.unpack("<BI", payload)
+        elif command == Command.AWG_CONFIG_EXT:
+            channel, waveform, frequency, *_rest = struct.unpack("<BBIHHH", payload)
+            self.waveforms[channel] = waveform
+            self.frequencies[channel] = frequency / 1000
         elif command == Command.AWG_START:
             self.state = 2
         elif command == Command.AWG_STOP:
             self.state = 1
-        if command == Command.STATUS:
+        if command == Command.AWG_STATUS_EXT:
+            channel = payload[0]
             return struct.pack(
-                "<BBIIII",
+                "<BBBIIHHHIIIH",
                 self.state,
-                self.waveform,
-                self.frequency,
-                self.frequency * 1000,
+                channel,
+                self.waveforms[channel],
+                round(self.frequencies[channel] * 1000),
+                round(self.frequencies[channel] * 1000),
+                750,
+                500,
+                0,
+                0,
+                0,
                 0,
                 0,
             )
@@ -77,17 +88,27 @@ def test_session_runs_connection_and_commands_on_worker_thread(app):
 
     session = DeviceSession(factory)
     try:
-        name, capabilities, status = wait_for(
+        name, capabilities, statuses = wait_for(
             session.connected, lambda: session.connect_device("test")
         )
         assert name == "STM32-MSI"
         assert capabilities["max_hz"] == 1000
-        assert status.state == 1
+        assert capabilities["channels"] == 2
+        assert [status.channel for status in statuses] == [0, 1]
+        assert all(status.state == 1 for status in statuses)
         assert worker_threads[0] != app.thread()
 
-        (status,) = wait_for(session.status_changed, session.start)
-        assert status.state == 2
-        (status,) = wait_for(session.status_changed, session.stop)
-        assert status.state == 1
+        (statuses,) = wait_for(session.status_changed, session.start)
+        assert all(status.state == 2 for status in statuses)
+        (statuses,) = wait_for(session.status_changed, session.stop)
+        assert all(status.state == 1 for status in statuses)
+        (statuses,) = wait_for(
+            session.status_changed,
+            lambda: session.configure(1, "sawtooth", 123.456, 60, 50, 90),
+        )
+        status = statuses[1]
+        assert status.channel == 1
+        assert status.waveform == 3
+        assert status.requested_hz == pytest.approx(123.456)
     finally:
         session.shutdown()

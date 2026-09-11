@@ -110,6 +110,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    awg_process();
     usb_control_poll();
     if ((uint32_t)(HAL_GetTick() - heartbeat) >= 500U)
     {

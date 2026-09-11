@@ -3,11 +3,10 @@
 A PC-controlled waveform generator, oscilloscope and logic analyzer built around
 an STM32F407G-DISC1.
 
-**Status:** basic waveform generation on PA4: sine, triangle and square, with
-integer frequency settings from 1 to 1000 Hz. Startup selects a 1 kHz sine.
-USB control is implemented and validated over the native CDC port. The desktop
-application controls the current AWG. Acquisition and analog characterization
-remain open.
+**Status:** the AWG uses a 400 kS/s DDS engine on PA4 and PA5 with sine, triangle,
+square, sawtooth, DC and arbitrary tables. The desktop application controls frequency,
+amplitude, offset and phase over native USB CDC. Dual-output digital and USB checks pass;
+the configured range is 1 Hz to 20 kHz. Analog characterization remains open.
 
 ## Platform
 
@@ -48,8 +47,8 @@ Replace COM5 with the enumerated CDC port. [Protocol](protocol/README.md)
 
 ## Scope
 
-Planned features: two analog input channels, two internal DAC outputs and eight
-digital inputs. Sampling and generation use timers and DMA; high-rate captures
+Planned features: two analog input channels and eight digital inputs. Sampling and
+generation use timers and DMA; high-rate captures
 are buffered in SRAM before transfer. Performance specifications are pending
 characterization.
 

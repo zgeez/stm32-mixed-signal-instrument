@@ -6,17 +6,37 @@ from dataclasses import dataclass
 from .protocol import Command
 from .transport import Transport
 
-WAVEFORMS = {"sine": 0, "triangle": 1, "square": 2}
+WAVEFORMS = {
+    "sine": 0,
+    "triangle": 1,
+    "square": 2,
+    "sawtooth": 3,
+    "dc": 4,
+    "arbitrary": 5,
+}
+MIN_FREQUENCY_MILLIHZ = 1000
+MAX_FREQUENCY_MILLIHZ = 20_000_000
+MAX_ARBITRARY_SAMPLES = 256
 
 
 @dataclass(frozen=True)
 class Status:
     state: int
+    channel: int
     waveform: int
-    requested_hz: int
+    frequency_millihz: int
     actual_millihz: int
-    underruns: int
-    dma_errors: int
+    amplitude_permille: int = 750
+    offset_permille: int = 500
+    phase_decidegrees: int = 0
+    underruns: int = 0
+    dma_errors: int = 0
+    refill_misses: int = 0
+    arbitrary_length: int = 0
+
+    @property
+    def requested_hz(self) -> float:
+        return self.frequency_millihz / 1000
 
 
 class Instrument:
@@ -31,18 +51,84 @@ class Instrument:
             "<BBIIB", self.transport.request(Command.CAPABILITIES)
         )
         return dict(
-            channels=channels, waveforms=waveforms, min_hz=minimum, max_hz=maximum, samples=samples
+            channels=channels,
+            waveforms=waveforms,
+            min_hz=minimum,
+            max_hz=maximum,
+            samples=samples,
         )
 
     def status(self) -> Status:
-        return Status(*struct.unpack("<BBIIII", self.transport.request(Command.STATUS)))
+        state, waveform, requested_hz, actual, underruns, dma_errors = struct.unpack(
+            "<BBIIII", self.transport.request(Command.STATUS)
+        )
+        return Status(
+            state,
+            0,
+            waveform,
+            requested_hz * 1000,
+            actual,
+            underruns=underruns,
+            dma_errors=dma_errors,
+        )
+
+    def channel_status(self, channel: int) -> Status:
+        if channel not in range(2):
+            raise ValueError("Channel must be 0 or 1")
+        values = struct.unpack(
+            "<BBBIIHHHIIIH",
+            self.transport.request(Command.AWG_STATUS_EXT, bytes([channel])),
+        )
+        return Status(*values)
 
     def configure(self, waveform: str, frequency_hz: int) -> None:
-        if waveform not in WAVEFORMS or not 1 <= frequency_hz <= 1000:
-            raise ValueError("Expected sine, triangle or square at 1..1000 Hz")
+        if waveform not in ("sine", "triangle", "square") or not 1 <= frequency_hz <= 20_000:
+            raise ValueError("Expected sine, triangle or square at 1..20000 Hz")
         self.transport.request(
             Command.AWG_CONFIG, struct.pack("<BI", WAVEFORMS[waveform], frequency_hz)
         )
+
+    def configure_channel(
+        self,
+        channel: int,
+        waveform: str,
+        frequency_hz: float,
+        amplitude_percent: float,
+        offset_percent: float,
+        phase_degrees: float,
+    ) -> None:
+        if channel not in range(2) or waveform not in WAVEFORMS:
+            raise ValueError("Invalid AWG channel or waveform")
+        frequency = round(frequency_hz * 1000)
+        amplitude = round(amplitude_percent * 10)
+        offset = round(offset_percent * 10)
+        phase = round(phase_degrees * 10)
+        if not MIN_FREQUENCY_MILLIHZ <= frequency <= MAX_FREQUENCY_MILLIHZ:
+            raise ValueError("Frequency must be between 1 and 20000 Hz")
+        if not 0 <= amplitude <= 1000 or not 0 <= offset <= 1000 or not 0 <= phase < 3600:
+            raise ValueError("Amplitude, offset or phase is outside its range")
+        span = min((4096 * amplitude + 500) // 1000, 4095)
+        center = min((4096 * offset + 500) // 1000, 4095)
+        lower = (span + 1) // 2
+        if center < lower or center + span - lower > 4095:
+            raise ValueError("Amplitude and offset would exceed the DAC range")
+        payload = struct.pack(
+            "<BBIHHH", channel, WAVEFORMS[waveform], frequency, amplitude, offset, phase
+        )
+        self.transport.request(Command.AWG_CONFIG_EXT, payload)
+
+    def upload_arbitrary(self, channel: int, samples: list[int]) -> None:
+        if channel not in range(2) or not 2 <= len(samples) <= MAX_ARBITRARY_SAMPLES:
+            raise ValueError("Arbitrary tables require 2..256 samples")
+        if any(not isinstance(sample, int) or not 0 <= sample <= 4095 for sample in samples):
+            raise ValueError("Arbitrary samples must be integer DAC codes from 0 to 4095")
+        for offset in range(0, len(samples), 14):
+            chunk = samples[offset : offset + 14]
+            payload = struct.pack("<BHB", channel, offset, len(chunk)) + struct.pack(
+                f"<{len(chunk)}H", *chunk
+            )
+            self.transport.request(Command.AWG_UPLOAD, payload)
+        self.transport.request(Command.AWG_COMMIT, struct.pack("<BH", channel, len(samples)))
 
     def start(self) -> None:
         self.transport.request(Command.AWG_START)

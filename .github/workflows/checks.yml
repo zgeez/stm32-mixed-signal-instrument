@@ -5,6 +5,13 @@ on:
 permissions:
   contents: read
 jobs:
+  host-c:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S firmware/tests -B firmware/tests/build
+      - run: cmake --build firmware/tests/build
+      - run: ctest --test-dir firmware/tests/build --output-on-failure
   desktop:
     runs-on: ubuntu-latest
     steps:

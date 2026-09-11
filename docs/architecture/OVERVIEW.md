@@ -3,8 +3,8 @@
 ## Firmware configuration
 
 STM32F407VGT6, generated with STM32CubeMX 6.18.1 and STM32CubeF4 1.28.3.
-CubeMX owns pins, clocks and initialization. Application modules will live outside
-`Core/`; integration remains in generated USER CODE regions.
+CubeMX owns pins, clocks and initialization. Application modules live in `App/`,
+outside `Core/`; integration remains in generated USER CODE regions.
 
 | Resource | Configuration |
 | --- | --- |
@@ -15,11 +15,24 @@ CubeMX owns pins, clocks and initialization. Application modules will live outsi
 | DMA | DMA1 Stream 5 Channel 7; circular, half-word, memory-to-peripheral |
 | Board control | PD4 low holds audio codec in reset; PE3 high deselects motion sensor; PC0 high disables USB host power switch |
 | Debug | PA13/PA14 SWD; SysTick HAL timebase |
-| Heartbeat | Green LD4 on PD12; toggles every 500 ms through the HAL tick |
+| Heartbeat | Green LD4 on PD12; nonblocking 500 ms tick check |
 
-The configured timer update rate is 100 kHz. TIM6 and DAC DMA remain stopped until
-application code starts them. A 100-sample LUT would produce a calculated 1 kHz
-fundamental; output quality and frequency accuracy remain unmeasured.
+## AWG
+
+Boot starts a 1 kHz sine. Sine, triangle and 50% square use 100-sample tables
+at integer frequency settings from 1 to 1000 Hz:
+
+`f_out = 84 MHz / ((PSC + 1) * (ARR + 1) * 100)`
+
+Timer rounding contributes less than 0.1% error across this range. Codes 512..3584
+give an ideal average near VREF+/2 and peak-to-peak voltage of 0.75 VREF+.
+Analog accuracy is unmeasured; PA4's audio connection can load the output.
+
+`App/awg` owns TIM6, DAC1 and the 200-byte DMA table in main SRAM. Configuration
+requires a stopped generator. DMA repeats the table without refill interrupts.
+Errors stop TIM6 and latch FAULT; stop releases DMA before recovery. Counters persist
+until reset. Stop disables the DAC; it does not hold PA4 at zero volts. Debug builds
+freeze TIM6 while the core is halted.
 
 ## Planned acquisition resources
 
@@ -32,18 +45,11 @@ fundamental; output quality and frequency accuracy remain unmeasured.
 | Logic DMA | TIM1 update, DMA2 S5 C6 | Bus latency affects sampling instant; rate must be measured |
 | USB | Native OTG_FS, CN5 | Separate from ST-LINK on CN1 |
 
-PA4 shares an audio connection. Codec reset prevents audio operation but does not
-remove electrical loading. Pin availability and optional audio routing must match
-the actual MB997 board revision.
+DMA2 can read AHB1 GPIO; DMA1 cannot. GPIO has no sample FIFO, so bus contention
+can cause jitter or missed samples without an overrun indication.
 
-DMA2 can reach AHB1 GPIO through its peripheral port; DMA1 cannot. Timer requests
-pace peripheral-to-memory reads from GPIO IDR. GPIO has no sample FIFO, so bus
-contention can introduce jitter or missed samples without an ADC-style overrun flag.
-
-With PCLK2=84 MHz, ADC /4 gives 21 MHz; /2 exceeds the 36 MHz ADC limit. At the
-minimum 15 conversion cycles, the calculated ceiling is 1.4 MS/s per ADC. Input
-settling may require longer sampling. Datasheet conversion rates are not analog
-bandwidth or measured instrument specifications.
+ADC /4 gives 21 MHz; /2 exceeds the 36 MHz limit. The minimum 15 conversion cycles
+give a calculated 1.4 MS/s ceiling. Source settling may require slower sampling.
 
 ## Memory and throughput
 
@@ -53,24 +59,19 @@ bandwidth or measured instrument specifications.
 | SRAM2 | 0x2001C000 | 16 KiB | DMA buffers and shared state |
 | CCM | 0x10000000 | 64 KiB | CPU-only data; inaccessible to DMA |
 
-The DMA buffer budget is within 128 KiB, after globals, stacks, queues and heap.
-Buffers require aligned storage and exclusive ownership through DMA and USB
-completion. There is no M7-style data-cache maintenance requirement on this MCU.
+DMA buffers share 128 KiB with globals, stack and heap. CCM is CPU-only.
 
-Two ADC channels at 1 MS/s in 16-bit containers generate 4 MB/s. USB Full Speed's
-12 Mbit/s line rate is only 1.5 MB/s before overhead. High-rate operation therefore
-uses finite SRAM captures followed by transfer. Continuous mode must stay below
-measured sustained USB throughput. Buffering cannot fix a sustained rate mismatch.
+Two ADC channels at 1 MS/s in 16-bit containers produce 4 MB/s. USB Full Speed is
+limited to 1.5 MB/s before overhead, so high-rate acquisition needs finite captures.
 
 ## Software boundaries
 
-Timers determine sampling and output timing. DMA interrupts acknowledge events and
-publish completed buffers; foreground code handles control and processing.
-FreeRTOS will coordinate ownership and queues when concurrency requires it.
+Timers determine sampling and output timing. DMA interrupts handle errors while
+the foreground loop performs noncritical work. The LED uses a nonblocking tick
+check. FreeRTOS is deferred until integration.
 
 Desktop dependencies follow UI -> instrument model -> protocol -> transport.
-The UI consumes captures and status; it does not parse USB bytes. Only the package
-entry point exists at present.
+USB control, the GUI and acquisition transfers are pending.
 
 ## References
 

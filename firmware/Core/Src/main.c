@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "awg.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,7 +93,11 @@ int main(void)
   MX_DAC_Init();
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
-
+  uint32_t heartbeat = HAL_GetTick();
+  if (awg_configure(AWG_SINE, 1000U) != AWG_OK || awg_start() != AWG_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -103,8 +107,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    HAL_GPIO_TogglePin(LD4_GPIO_Port, LD4_Pin);
-    HAL_Delay(500);
+    if ((uint32_t)(HAL_GetTick() - heartbeat) >= 500U)
+    {
+      heartbeat = HAL_GetTick();
+      HAL_GPIO_TogglePin(LD4_GPIO_Port, LD4_Pin);
+    }
   }
   /* USER CODE END 3 */
 }

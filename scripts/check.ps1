@@ -1,9 +1,8 @@
-# Run from any directory with the repository development environment installed.
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $pythonExe = Join-Path $repoRoot '.venv/Scripts/python.exe'
 if (-not (Test-Path -LiteralPath $pythonExe)) {
-    throw 'Create .venv and install desktop[dev] using README.md first.'
+    throw 'Missing .venv. Install desktop[dev] in the repository virtual environment.'
 }
 Push-Location $repoRoot
 try {

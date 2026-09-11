@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.22)
+project(firmware_tests LANGUAGES C)
+enable_testing()
+
+add_executable(test_awg test_awg.c ../App/awg/awg_waveform.c)
+target_include_directories(test_awg PRIVATE ../App/awg)
+target_compile_features(test_awg PRIVATE c_std_11)
+if(MSVC)
+    target_compile_options(test_awg PRIVATE /W4 /WX)
+    target_compile_definitions(test_awg PRIVATE _CRT_SECURE_NO_WARNINGS)
+else()
+    target_compile_options(test_awg PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(test_awg PRIVATE m)
+endif()
+
+add_test(NAME awg_algorithms COMMAND test_awg)

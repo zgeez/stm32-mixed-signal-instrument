@@ -1,0 +1,29 @@
+# Validation
+
+STM32F407G-DISC1, STM32CubeF4 1.28.3, Arm GNU 14.3.1. Board checks use ST-LINK/GDB
+and Debug firmware unless stated otherwise. Host tests do not validate analog output.
+
+## Automated checks
+
+- Debug and Release firmware builds pass.
+- Native C tests cover waveform shape, bounds and all 1..1000 Hz timer settings.
+- Desktop package tests and lint checks pass.
+
+## Board checks — 2026-09-10
+
+| Check | Result |
+| --- | --- |
+| Bring-up | Flash readback, clock registers, breakpoints and LED heartbeat passed |
+| AWG sustained run | Sine, triangle and square at calculated 1 kHz; zero errors over 120 heartbeat intervals per shape (~60 s target runtime) |
+| Timer configuration | Dividers checked at 1 Hz and 1 kHz |
+| DAC sequencing | 202 output-register samples matched, including startup and two table wraps |
+| AWG control | Invalid/active configuration rejected; ten stop/start cycles passed |
+| Forced DMA starvation | One underrun stopped TIM6; stop/configure/start recovered |
+
+Debugger halts freeze TIM6. These checks establish digital behavior, not uninterrupted
+analog timing. DAC sequence checks used manually generated TIM6 update events.
+
+## Open measurements
+
+Analog frequency, shape, amplitude and distortion remain unmeasured. A DC multimeter
+can check the average near VREF+/2; it cannot establish waveform quality.

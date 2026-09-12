@@ -7,8 +7,8 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from stm32_msi.gui import MainWindow, Port, parse_sample_table
-from stm32_msi.instrument import Capture, ScopeStatus, Status
+from stm32_msi.gui import MainWindow, Port, format_duration, parse_sample_table
+from stm32_msi.instrument import Capture, LogicCapture, LogicStatus, ScopeStatus, Status
 
 
 class FakeSession(QObject):
@@ -16,6 +16,8 @@ class FakeSession(QObject):
     status_changed = Signal(object)
     scope_status_changed = Signal(object)
     capture_ready = Signal(object)
+    logic_status_changed = Signal(object)
+    logic_capture_ready = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -50,6 +52,15 @@ class FakeSession(QObject):
 
     def read_capture(self, status, rearm_config=None):
         self.calls.append(("read_capture", status, rearm_config))
+
+    def arm_logic(self, config):
+        self.calls.append(("arm_logic", config))
+
+    def stop_logic(self):
+        self.calls.append(("stop_logic",))
+
+    def read_logic_capture(self, status, rearm_config=None):
+        self.calls.append(("read_logic_capture", status, rearm_config))
 
     def shutdown(self):
         self.calls.append(("shutdown",))
@@ -311,3 +322,134 @@ def test_empty_port_list_disables_connect(app):
     assert view.port_combo.currentData() is None
     assert not view.connect_button.isEnabled()
     view.close()
+
+
+def uart_capture(values, span=16):
+    bits = [1] * (2 * span)
+    for value in values:
+        for bit in [0] + [(value >> index) & 1 for index in range(8)] + [1]:
+            bits += [bit] * span
+    bits += [1] * span
+    status = LogicStatus(2, 1_000_000, 1_000_000, len(bits), 0, 1, 0, 0, 0)
+    return LogicCapture(status, tuple(bits))
+
+
+def test_logic_trigger_controls_follow_the_selected_mode(window, app):
+    view, session = window
+    connect(view, session, app)
+    session.logic_status_changed.emit(LogicStatus(0, 1_000_000, 1_000_000, 1024, 512, 0, 0, 0, 0))
+    app.processEvents()
+    panel = view.logic
+
+    panel.trigger_mode.setCurrentIndex(1)
+    assert panel.trigger_channel.isEnabled()
+    assert not panel.pattern[0].isEnabled()
+
+    panel.trigger_mode.setCurrentIndex(3)
+    assert not panel.trigger_channel.isEnabled()
+    assert all(combo.isEnabled() for combo in panel.pattern)
+
+    panel.pattern[0].setCurrentIndex(2)
+    panel.pattern[3].setCurrentIndex(1)
+    config = panel.config()
+    assert config.trigger_mode == 3
+    assert config.trigger_mask == 0b00001001
+    assert config.trigger_value == 0b00000001
+
+
+def test_logic_capture_draws_square_traces_and_measures(window, app):
+    view, session = window
+    connect(view, session, app)
+    complete = LogicStatus(2, 1_000_000, 1_000_000, 8, 4, 3, 0, 0, 0)
+    session.logic_status_changed.emit(complete)
+    app.processEvents()
+    assert session.calls[-1] == ("read_logic_capture", complete, None)
+
+    session.logic_capture_ready.emit(LogicCapture(complete, (0, 0, 1, 1, 0, 0, 1, 1)))
+    app.processEvents()
+    panel = view.logic
+    # Each sample becomes two points so the trace shows square edges.
+    assert panel.traces[0].xData.size == 15
+    assert panel.traces[0].yData.min() == pytest.approx(0.0)
+    assert panel.traces[0].yData.max() == pytest.approx(0.7)
+    assert panel.traces[1].yData.min() == pytest.approx(1.0)
+    assert panel.measurements[0][0].text() == "3"
+    assert panel.measurements[0][1].text() == "50.0 %"
+    assert panel.measurements[1][0].text() == "0"
+    assert "1.000 MS/s" in panel.logic_state.text()
+
+
+def test_logic_decoder_output_follows_the_protocol_selection(window, app):
+    view, session = window
+    connect(view, session, app)
+    panel = view.logic
+    panel.apply_capture(uart_capture([0x41, 0x42]))
+    assert panel.decode_output.toPlainText() == ""
+
+    panel.decoder.setCurrentIndex(panel.decoder.findData("UART"))
+    panel.baud.setValue(62_500)
+    assert panel.baud.isVisibleTo(panel)
+    lines = panel.decode_output.toPlainText().splitlines()
+    assert [line.split()[-1] for line in lines] == ["0x41", "0x42"]
+
+    panel.decoder.setCurrentIndex(panel.decoder.findData("I2C"))
+    assert not panel.baud.isVisibleTo(panel)
+    assert panel.decode_output.toPlainText() == "No symbols decoded"
+
+    panel.decoder.setCurrentIndex(panel.decoder.findData("UART"))
+    panel.baud.setValue(1_000_000)
+    assert "too slow" in panel.decode_output.toPlainText()
+
+
+def test_logic_run_rearms_and_stop_clears_it(window, app):
+    view, session = window
+    connect(view, session, app)
+    session.logic_status_changed.emit(LogicStatus(0, 1_000_000, 1_000_000, 1024, 512, 0, 0, 0, 0))
+    app.processEvents()
+
+    view.logic.run.click()
+    assert session.calls[-1][0] == "arm_logic"
+    assert view._poll_timer.interval() == 100
+    live_config = session.calls[-1][1]
+    session.busy_changed.emit(False)
+
+    complete = LogicStatus(2, 1_000_000, 1_000_000, 8, 4, 9, 0, 0, 0)
+    session.logic_status_changed.emit(complete)
+    app.processEvents()
+    assert session.calls[-1] == ("read_logic_capture", complete, live_config)
+    assert view.logic.stop.isEnabled()
+    assert not view.logic.run.isEnabled()
+
+    session.logic_capture_ready.emit(LogicCapture(complete, (0, 1, 0, 1, 0, 1, 0, 1)))
+    app.processEvents()
+    assert "Live logic 9" in view.statusBar().currentMessage()
+
+    view.logic.stop.click()
+    assert session.calls[-1] == ("stop_logic",)
+    session.logic_status_changed.emit(LogicStatus(0, 1_000_000, 1_000_000, 8, 4, 9, 0, 0, 0))
+    session.busy_changed.emit(False)
+    app.processEvents()
+    assert view._poll_timer.interval() == 500
+    assert view.logic.run.isEnabled()
+
+
+def test_logic_fault_stops_the_live_view(window, app):
+    view, session = window
+    connect(view, session, app)
+    session.logic_status_changed.emit(LogicStatus(0, 2_000_000, 2_000_000, 1024, 512, 0, 0, 0, 0))
+    app.processEvents()
+    view.logic.run.click()
+    session.busy_changed.emit(False)
+    session.logic_status_changed.emit(LogicStatus(3, 2_000_000, 2_000_000, 1024, 512, 0, 1, 2, 3))
+    app.processEvents()
+    assert not view._logic_live
+    assert view._poll_timer.interval() == 500
+    assert "Fault" in view.logic.logic_state.text()
+    assert "Overruns 2" in view.logic.logic_counts.text()
+
+
+def test_durations_are_formatted_by_magnitude():
+    assert format_duration(None) == "\u2014"
+    assert format_duration(500e-9) == "500 ns"
+    assert format_duration(12.5e-6) == "12.500 us"
+    assert format_duration(4e-3) == "4.000 ms"

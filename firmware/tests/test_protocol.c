@@ -2,6 +2,7 @@
 #include "commands.h"
 #include "awg.h"
 #include "scope.h"
+#include "logic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,8 @@ static uint16_t last_offset;
 static uint8_t last_count;
 static scope_config_t last_scope_config;
 static uint32_t scope_samples[12];
+static logic_config_t last_logic_config;
+static uint8_t logic_samples[LOGIC_READ_MAX];
 
 awg_result_t awg_configure(awg_waveform_t shape, uint32_t hz)
 {
@@ -113,6 +116,32 @@ bool scope_read(uint32_t capture_id, uint16_t offset, uint8_t count, uint32_t *s
     return true;
 }
 void scope_process(void) {}
+logic_result_t logic_configure(const logic_config_t *config)
+{
+    last_logic_config = *config;
+    ++calls;
+    return (logic_result_t)result;
+}
+logic_result_t logic_arm(void) { ++calls; return (logic_result_t)result; }
+logic_result_t logic_stop(void) { ++calls; return (logic_result_t)result; }
+logic_status_t logic_get_status(void)
+{
+    return (logic_status_t){.state = LOGIC_COMPLETE,
+                            .config = {.sample_rate = 5000000U, .sample_count = 1024U},
+                            .actual_rate = 4941176U,
+                            .trigger_index = 256U,
+                            .capture_id = 7U,
+                            .trigger_misses = 5U,
+                            .overruns = 3U,
+                            .dma_errors = 2U};
+}
+bool logic_read(uint32_t capture_id, uint16_t offset, uint8_t count, uint8_t *samples)
+{
+    if (capture_id != 7U || offset + count > 1024U) return false;
+    for (uint8_t i = 0; i < count; ++i) samples[i] = logic_samples[i];
+    return true;
+}
+void logic_process(void) {}
 
 static unsigned unhex(const char *text, uint8_t *out)
 {
@@ -155,7 +184,7 @@ int main(int argc, char **argv)
         ++vectors;
     }
     fclose(file);
-    CHECK(vectors == 5);
+    CHECK(vectors == 7);
     protocol_parser_t parser = {0};
     protocol_frame_t frame = {.version = 1, .command = CMD_STATUS, .sequence = 7}, decoded;
     for (unsigned i = 0; i < 200; ++i) {
@@ -275,6 +304,44 @@ int main(int argc, char **argv)
     command_execute(&frame, &reply);
     CHECK(reply.length == 16U && reply.payload[0] == REPLY_OK);
     CHECK(reply.payload[8] == 100U && reply.payload[10] == 200U);
+    frame.command = CMD_LOGIC_CONFIG;
+    frame.length = 12U;
+    const uint8_t logic_config[] = {0x40, 0x4b, 0x4c, 0x00, 0x00, 0x04,
+                                    3, 2, 0x0f, 0x0a, 0xfa, 0x00};
+    memcpy(frame.payload, logic_config, sizeof logic_config);
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[0] == REPLY_OK && last_logic_config.sample_rate == 5000000U);
+    CHECK(last_logic_config.sample_count == 1024U);
+    CHECK(last_logic_config.trigger.mode == LOGIC_TRIGGER_PATTERN);
+    CHECK(last_logic_config.trigger.channel == 2U && last_logic_config.trigger.mask == 0x0fU);
+    CHECK(last_logic_config.trigger.value == 0x0aU);
+    CHECK(last_logic_config.pretrigger_permille == 250U);
+
+    frame.command = CMD_LOGIC_STATUS;
+    frame.length = 0U;
+    command_execute(&frame, &reply);
+    CHECK(reply.length == 30U && reply.payload[1] == LOGIC_COMPLETE);
+    CHECK(reply.payload[2] == 0x40U && reply.payload[14] == 7U && reply.payload[22] == 3U);
+
+    logic_samples[0] = 0xa5U;
+    logic_samples[1] = 0x5aU;
+    frame.command = CMD_LOGIC_READ;
+    frame.length = 7U;
+    const uint8_t logic_request[] = {7, 0, 0, 0, 0, 0, 2};
+    memcpy(frame.payload, logic_request, sizeof logic_request);
+    command_execute(&frame, &reply);
+    CHECK(reply.length == 10U && reply.payload[0] == REPLY_OK);
+    CHECK(reply.payload[8] == 0xa5U && reply.payload[9] == 0x5aU);
+
+    frame.payload[6] = LOGIC_READ_MAX + 1U;
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[0] == REPLY_INVALID);
+
+    frame.command = CMD_LOGIC_READ + 1U;
+    frame.length = 0U;
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[0] == REPLY_COMMAND);
+
     puts("Protocol vectors, bounds, malformed frames and command validation passed.");
     return 0;
 }

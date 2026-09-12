@@ -33,6 +33,11 @@ CRC. USB handles link integrity; the parser validates framing and payload length
 | 13 | SCOPE_STOP | Empty | Empty |
 | 14 | SCOPE_STATUS | Empty | State u8, rate u32, count u16, trigger index u16, capture ID u32, trigger misses u32, overruns u32, DMA errors u32 |
 | 15 | SCOPE_READ | Capture ID u32, offset u16, count u8 | Capture ID u32, offset u16, count u8, packed sample pairs u32 |
+| 16 | LOGIC_CONFIG | Rate u32, count u16, mode u8, channel u8, mask u8, value u8, pre-trigger permille u16 | Empty |
+| 17 | LOGIC_ARM | Empty | Empty |
+| 18 | LOGIC_STOP | Empty | Empty |
+| 19 | LOGIC_STATUS | Empty | State u8, requested rate u32, actual rate u32, count u16, trigger index u16, capture ID u32, trigger misses u32, overruns u32, DMA errors u32 |
+| 20 | LOGIC_READ | Capture ID u32, offset u16, count u8 | Capture ID u32, offset u16, count u8, channel bytes |
 
 Commands 1 through 6 retain their original layout. Extended commands address channels
 0 and 1. Waveforms: 0 sine, 1 triangle, 2 square, 3 sawtooth, 4 DC, 5 arbitrary.
@@ -61,3 +66,13 @@ sample pairs from PC4 and PC5. Edge values are 0 free-run, 1 rising and 2 fallin
 trigger level is a 12-bit ADC code. Each read returns at most 12 pairs, with CH1 in
 bits 0..15 and CH2 in bits 16..31. Scope states are 0 idle, 1 armed, 2 complete and
 3 fault.
+
+Logic requested rates are 1, 2, 5 and 10 MS/s. The sampling timer divides 168 MHz by
+an integer, so 5 and 10 MS/s are not reachable exactly; LOGIC_STATUS reports both the
+requested rate and the rate actually programmed. Captures contain 64..4096 samples of
+channels D0..D7 on PE7..PE14, one byte per sample with D0 in bit 0. Trigger modes are
+0 free-run, 1 rising, 2 falling and 3 pattern. Edge modes use the channel field;
+pattern mode compares `(sample & mask) == (value & mask)` and fires on entry, so mask
+must select at least one channel. Each read returns at most 48 samples. Logic states
+match the scope's: 0 idle, 1 armed, 2 complete and 3 fault. Logic and scope acquisition
+use separate DMA streams but are not yet coordinated; run one at a time.

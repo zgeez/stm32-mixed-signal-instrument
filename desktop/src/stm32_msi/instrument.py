@@ -17,6 +17,11 @@ WAVEFORMS = {
 MIN_FREQUENCY_MILLIHZ = 1000
 MAX_FREQUENCY_MILLIHZ = 20_000_000
 MAX_ARBITRARY_SAMPLES = 256
+LOGIC_CHANNELS = 8
+LOGIC_RATES = (1_000_000, 2_000_000, 5_000_000, 10_000_000)
+LOGIC_MAX_SAMPLES = 4096
+LOGIC_READ_MAX = 48
+TIMER_CLOCK_HZ = 168_000_000
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,44 @@ class Capture:
     status: ScopeStatus
     channel_1: tuple[int, ...]
     channel_2: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class LogicConfig:
+    sample_rate: int = 1_000_000
+    sample_count: int = 1024
+    trigger_mode: int = 0
+    trigger_channel: int = 0
+    trigger_mask: int = 0
+    trigger_value: int = 0
+    pretrigger_permille: int = 500
+
+
+@dataclass(frozen=True)
+class LogicStatus:
+    state: int
+    sample_rate: int
+    actual_rate: int
+    sample_count: int
+    trigger_index: int
+    capture_id: int
+    trigger_misses: int
+    overruns: int
+    dma_errors: int
+
+
+@dataclass(frozen=True)
+class LogicCapture:
+    status: LogicStatus
+    samples: tuple[int, ...]
+
+
+def logic_actual_rate(sample_rate: int) -> int:
+    """The timer divides a fixed clock, so not every requested rate is reachable."""
+    if sample_rate <= 0:
+        raise ValueError("Sample rate must be positive")
+    divider = max(1, round(TIMER_CLOCK_HZ / sample_rate))
+    return TIMER_CLOCK_HZ // divider
 
 
 class Instrument:
@@ -212,3 +255,56 @@ class Instrument:
             first.extend(value & 0xFFFF for value in packed)
             second.extend(value >> 16 for value in packed)
         return Capture(status, tuple(first), tuple(second))
+
+    def configure_logic(self, config: LogicConfig) -> None:
+        if config.sample_rate not in LOGIC_RATES:
+            raise ValueError("Sample rate must be 1, 2, 5 or 10 MS/s")
+        if not 64 <= config.sample_count <= LOGIC_MAX_SAMPLES:
+            raise ValueError(f"Sample count must be between 64 and {LOGIC_MAX_SAMPLES}")
+        if config.trigger_mode not in range(4):
+            raise ValueError("Invalid trigger mode")
+        if config.trigger_channel not in range(LOGIC_CHANNELS):
+            raise ValueError(f"Trigger channel must be 0..{LOGIC_CHANNELS - 1}")
+        if not 0 <= config.trigger_mask <= 255 or not 0 <= config.trigger_value <= 255:
+            raise ValueError("Trigger mask and value must be single bytes")
+        if config.trigger_mode == 3 and config.trigger_mask == 0:
+            raise ValueError("A pattern trigger needs at least one selected channel")
+        if not 0 <= config.pretrigger_permille <= 900:
+            raise ValueError("Trigger position is outside its range")
+        self.transport.request(
+            Command.LOGIC_CONFIG,
+            struct.pack(
+                "<IHBBBBH",
+                config.sample_rate,
+                config.sample_count,
+                config.trigger_mode,
+                config.trigger_channel,
+                config.trigger_mask,
+                config.trigger_value,
+                config.pretrigger_permille,
+            ),
+        )
+
+    def arm_logic(self) -> None:
+        self.transport.request(Command.LOGIC_ARM)
+
+    def stop_logic(self) -> None:
+        self.transport.request(Command.LOGIC_STOP)
+
+    def logic_status(self) -> LogicStatus:
+        return LogicStatus(
+            *struct.unpack("<BIIHHIIII", self.transport.request(Command.LOGIC_STATUS))
+        )
+
+    def read_logic_capture(self, status: LogicStatus) -> LogicCapture:
+        samples: list[int] = []
+        for offset in range(0, status.sample_count, LOGIC_READ_MAX):
+            count = min(LOGIC_READ_MAX, status.sample_count - offset)
+            payload = self.transport.request(
+                Command.LOGIC_READ, struct.pack("<IHB", status.capture_id, offset, count)
+            )
+            capture_id, returned_offset, returned_count = struct.unpack_from("<IHB", payload)
+            if (capture_id, returned_offset, returned_count) != (status.capture_id, offset, count):
+                raise RuntimeError("Capture chunk does not match the request")
+            samples.extend(payload[7 : 7 + count])
+        return LogicCapture(status, tuple(samples))

@@ -74,6 +74,14 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(OTG_FS_PowerSwitchOn_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : LOGIC_D0_Pin LOGIC_D1_Pin LOGIC_D2_Pin LOGIC_D3_Pin
+                           LOGIC_D4_Pin LOGIC_D5_Pin LOGIC_D6_Pin LOGIC_D7_Pin */
+  GPIO_InitStruct.Pin = LOGIC_D0_Pin|LOGIC_D1_Pin|LOGIC_D2_Pin|LOGIC_D3_Pin
+                          |LOGIC_D4_Pin|LOGIC_D5_Pin|LOGIC_D6_Pin|LOGIC_D7_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
   /*Configure GPIO pins : LD4_Pin Audio_RST_Pin */
   GPIO_InitStruct.Pin = LD4_Pin|Audio_RST_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;

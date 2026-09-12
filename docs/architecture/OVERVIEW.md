@@ -14,7 +14,9 @@ outside `Core/`; integration remains in generated USER CODE regions.
 | DAC1/2 | PA4/PA5, TIM6 trigger, output buffers enabled |
 | ADC1/2 | PC4/PC5, regular simultaneous IN14/15; 21 MHz ADC clock |
 | TIM2 | 84 MHz timer clock; TRGO at 100, 500 or 1000 kS/s |
-| DMA | DAC1: DMA1 S5 C7; DAC2: DMA1 S6 C7; ADC pair: DMA2 S0 C0 |
+| TIM1 | 168 MHz timer clock; update event requests each logic sample |
+| Logic 0..7 | PE7..PE14, GPIOE inputs with pull-downs so unconnected channels read low |
+| DMA | DAC1: DMA1 S5 C7; DAC2: DMA1 S6 C7; ADC pair: DMA2 S0 C0; logic: DMA2 S5 C6 |
 | Board control | PD4 low holds audio codec in reset; PE3 high deselects motion sensor; PC0 high disables USB host power switch |
 | Debug | PA13/PA14 SWD; SysTick HAL timebase |
 | Status LED | Green LD4 on PD12; off when idle, slow blink while active, fast blink on fault |
@@ -52,15 +54,36 @@ view repeats this finite capture and transfer cycle, with refresh rate set by ca
 length and USB transfer time. The plot appends each capture to a scrolling captured-time
 axis while retaining a bounded history.
 
-## Planned logic acquisition
+## Logic analyzer
 
-| Function | Candidate | Constraint |
-| --- | --- | --- |
-| Logic 0..7 | PE7..PE14, GPIOE IDR | Half-word reads, then `(sample >> 7) & 0xff` |
-| Logic DMA | TIM1 update, DMA2 S5 C6 | Bus latency affects sampling instant; rate must be measured |
+TIM1 update events drive DMA2 Stream 5 Channel 6, which reads `GPIOE->IDR` as a
+half-word into a raw block twice the requested capture length. Channels D0..D7 are
+`(sample >> 7) & 0xff`, extracted only for the window that the trigger search keeps.
+DMA2 can reach AHB1 GPIO; DMA1 cannot. Captures contain 64..4096 samples and stop
+before USB transfer.
 
-DMA2 can read AHB1 GPIO; DMA1 cannot. GPIO has no sample FIFO, so bus contention
-can cause jitter or missed samples without an overrun indication.
+The timer divides 168 MHz by an integer, so 1 and 2 MS/s are exact while 5 and
+10 MS/s round to 4.941 and 9.882 MS/s. Status reports the requested and the programmed
+rate rather than presenting the request as achieved. 10 MS/s remains an experiment.
+
+Triggers are free-run, a rising or falling edge on one channel, or a masked pattern
+that fires when the port enters the pattern rather than while it is held. Missing
+triggers rearm acquisition and count separately from errors.
+
+GPIO has no sample FIFO, and a DMA read observes the pins when its bus transaction is
+serviced rather than at the timer edge. The DMA FIFO and direct-mode error flags are
+the only missed-transfer indicators available; they are counted as overruns, but their
+absence does not prove that every requested sampling instant was captured. A pulse
+shorter than one sample interval can be missed entirely. Minimum reliable pulse width
+and timing variation remain unmeasured.
+
+The desktop application reads completed captures in 48-sample packets, draws eight
+square traces against the trigger time, reports per-channel transitions, duty, shortest
+high and low runs, frequency and edge-interval jitter, and decodes UART, SPI and I2C
+from the captured channels. Decoding is a host function over the sample array, so it
+depends on the capture rate rather than on firmware support.
+
+## Analog acquisition limits
 
 ADC /4 gives 21 MHz; /2 exceeds the 36 MHz limit. The minimum 15 conversion cycles
 give a calculated 1.4 MS/s ceiling. Source settling may require slower sampling.
@@ -74,10 +97,11 @@ give a calculated 1.4 MS/s ceiling. Source settling may require slower sampling.
 | CCM | 0x10000000 | 64 KiB | CPU-only data; inaccessible to DMA |
 
 DMA buffers share 128 KiB with globals, stack and heap. Scope capture storage uses
-24 KiB at its maximum length. CCM is CPU-only.
+24 KiB at its maximum length and logic capture storage uses 20 KiB. CCM is CPU-only.
 
-Two ADC channels at 1 MS/s in 16-bit containers produce 4 MB/s. USB Full Speed is
-limited to 1.5 MB/s before overhead, so high-rate acquisition needs finite captures.
+Two ADC channels at 1 MS/s in 16-bit containers produce 4 MB/s, and eight logic
+channels sampled at 5 MS/s into half-words produce 10 MB/s. USB Full Speed is limited
+to 1.5 MB/s before overhead, so high-rate acquisition needs finite captures.
 
 ## Software boundaries
 
@@ -88,7 +112,8 @@ The LED uses a nonblocking tick check. FreeRTOS is deferred until integration.
 
 The CLI and PySide6 application call the same instrument model over a framed serial
 transport. Serial requests and capture transfer run on one Qt worker thread so they
-cannot block the interface. Scope display scaling stays in the UI: time/div sets a
+cannot block the interface. Capture analysis and protocol decoding stay on the host,
+in `desktop/src/stm32_msi/scope.py` and `logic.py`. Scope display scaling stays in the UI: time/div sets a
 ten-division window, volts/div sets an eight-division window, and manual pan or zoom
 pauses live following. The [protocol](../../protocol/README.md) defines commands and
 errors.

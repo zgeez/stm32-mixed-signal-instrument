@@ -20,7 +20,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSplitter,
     QStatusBar,
     QTabWidget,
     QVBoxLayout,
@@ -28,7 +31,21 @@ from PySide6.QtWidgets import (
 )
 from serial.tools import list_ports
 
-from .instrument import MAX_ARBITRARY_SAMPLES, WAVEFORMS, Capture, ScopeConfig, ScopeStatus, Status
+from .instrument import (
+    LOGIC_CHANNELS,
+    LOGIC_RATES,
+    MAX_ARBITRARY_SAMPLES,
+    WAVEFORMS,
+    Capture,
+    LogicCapture,
+    LogicConfig,
+    LogicStatus,
+    ScopeConfig,
+    ScopeStatus,
+    Status,
+)
+from .logic import channel_bits, decode_i2c, decode_spi, decode_uart
+from .logic import measure as logic_measure
 from .scope import adc_volts, measure
 from .session import DeviceSession
 
@@ -65,6 +82,16 @@ def parse_sample_table(text: str) -> list[int]:
     if any(not 0 <= sample <= 4095 for sample in samples):
         raise ValueError("DAC codes must be between 0 and 4095")
     return samples
+
+
+def format_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "—"
+    if seconds < 1e-6:
+        return f"{seconds * 1e9:.0f} ns"
+    if seconds < 1e-3:
+        return f"{seconds * 1e6:.3f} us"
+    return f"{seconds * 1e3:.3f} ms"
 
 
 class FineDial(QDial):
@@ -218,6 +245,10 @@ class OutputPanel(QGroupBox):
         status.addWidget(self.actual, 1, 1)
         status.addWidget(self.error, 1, 2)
         layout.addLayout(status)
+
+        # Spare height on a tall window belongs at the bottom. Without this the rows
+        # above share it out and the panel reads as scattered rather than spaced.
+        layout.addStretch(1)
 
     @staticmethod
     def _dial(
@@ -676,6 +707,324 @@ class ScopePanel(QWidget):
         self.stop.setEnabled(connected and not stopping and (live or state in (1, 2, 3)))
 
 
+class LogicPanel(QWidget):
+    arm_requested = Signal(object)
+    run_requested = Signal(object)
+    stop_requested = Signal()
+
+    PINS = tuple(f"PE{7 + channel}" for channel in range(LOGIC_CHANNELS))
+    DECODERS = {
+        "Off": (),
+        "UART": ("Data",),
+        "SPI": ("Clock", "Data", "Select"),
+        "I2C": ("SCL", "SDA"),
+    }
+
+    def __init__(self):
+        super().__init__()
+        self._capture = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        page = QVBoxLayout(self)
+        controls = QGroupBox("Acquisition")
+        row = QHBoxLayout(controls)
+
+        self.sample_rate = QComboBox()
+        for value in LOGIC_RATES:
+            self.sample_rate.addItem(f"{value // 1_000_000} MS/s", value)
+        self.sample_count = QComboBox()
+        for value in (256, 512, 1024, 2048, 4096):
+            self.sample_count.addItem(str(value), value)
+        self.sample_count.setCurrentIndex(self.sample_count.findData(1024))
+        self.trigger_mode = QComboBox()
+        for label, value in (("Free run", 0), ("Rising", 1), ("Falling", 2), ("Pattern", 3)):
+            self.trigger_mode.addItem(label, value)
+        self.trigger_channel = QComboBox()
+        for channel, pin in enumerate(self.PINS):
+            self.trigger_channel.addItem(f"D{channel} ({pin})", channel)
+        self.pretrigger = QDoubleSpinBox()
+        self.pretrigger.setRange(0, 90)
+        self.pretrigger.setValue(50)
+        self.pretrigger.setSuffix(" %")
+
+        for label, widget in (
+            ("Rate", self.sample_rate),
+            ("Samples", self.sample_count),
+            ("Trigger", self.trigger_mode),
+            ("Channel", self.trigger_channel),
+            ("Pretrigger", self.pretrigger),
+        ):
+            column = QVBoxLayout()
+            column.addWidget(QLabel(label))
+            column.addWidget(widget)
+            row.addLayout(column)
+
+        pattern_column = QVBoxLayout()
+        pattern_column.addWidget(QLabel("Pattern D7..D0"))
+        pattern_row = QHBoxLayout()
+        pattern_row.setSpacing(2)
+        self.pattern = []
+        for channel in range(LOGIC_CHANNELS):
+            combo = QComboBox()
+            combo.addItem("X", None)
+            combo.addItem("0", 0)
+            combo.addItem("1", 1)
+            combo.setFixedWidth(52)
+            combo.setToolTip(f"D{channel} ({self.PINS[channel]})")
+            self.pattern.append(combo)
+        for combo in reversed(self.pattern):
+            pattern_row.addWidget(combo)
+        pattern_column.addLayout(pattern_row)
+        row.addLayout(pattern_column)
+
+        self.arm = QPushButton("Single")
+        self.run = QPushButton("Run")
+        self.run.setToolTip("Continuously refresh using repeated finite captures")
+        self.stop = QPushButton("Stop")
+        row.addWidget(self.arm)
+        row.addWidget(self.run)
+        row.addWidget(self.stop)
+        page.addWidget(controls)
+
+        self.plot = pg.PlotWidget()
+        self.plot.setLabel("bottom", "Time (µs)")
+        self.plot.setYRange(-0.4, LOGIC_CHANNELS)
+        self.plot.showGrid(x=True, y=False, alpha=0.25)
+        self.plot.setMouseEnabled(x=True, y=False)
+        self.plot.setToolTip("Drag to pan. Use the mouse wheel to zoom the time axis.")
+        self.plot.getAxis("left").setTicks(
+            [[(channel + 0.35, f"D{channel}") for channel in range(LOGIC_CHANNELS)]]
+        )
+        self.traces = [
+            self.plot.plot(pen=pg.mkPen(pg.intColor(channel, LOGIC_CHANNELS), width=2))
+            for channel in range(LOGIC_CHANNELS)
+        ]
+        self.trigger_line = pg.InfiniteLine(
+            0, angle=90, pen=pg.mkPen("#e06666", style=Qt.PenStyle.DashLine)
+        )
+        self.plot.addItem(self.trigger_line)
+        self.plot.setMinimumHeight(220)
+
+        decode = QGroupBox("Decoder")
+        decode_layout = QVBoxLayout(decode)
+        decode_row = QHBoxLayout()
+        self.decoder = QComboBox()
+        for name in self.DECODERS:
+            self.decoder.addItem(name, name)
+        column = QVBoxLayout()
+        column.addWidget(QLabel("Protocol"))
+        column.addWidget(self.decoder)
+        decode_row.addLayout(column)
+
+        self.decode_labels = []
+        self.decode_channels = []
+        for slot in range(3):
+            label = QLabel("")
+            combo = QComboBox()
+            for channel, pin in enumerate(self.PINS):
+                combo.addItem(f"D{channel} ({pin})", channel)
+            combo.setCurrentIndex(slot)
+            column = QVBoxLayout()
+            column.addWidget(label)
+            column.addWidget(combo)
+            decode_row.addLayout(column)
+            self.decode_labels.append(label)
+            self.decode_channels.append(combo)
+
+        self.baud = QDoubleSpinBox()
+        self.baud.setRange(300, 5_000_000)
+        self.baud.setDecimals(0)
+        self.baud.setValue(115200)
+        self.baud.setSuffix(" Bd")
+        self.baud_label = QLabel("Baud")
+        column = QVBoxLayout()
+        column.addWidget(self.baud_label)
+        column.addWidget(self.baud)
+        decode_row.addLayout(column)
+        decode_row.addStretch(1)
+        decode_layout.addLayout(decode_row)
+        self.decode_output = QPlainTextEdit()
+        self.decode_output.setReadOnly(True)
+        self.decode_output.setMaximumHeight(90)
+        self.decode_output.setPlaceholderText("Select a protocol to decode the capture")
+        decode_layout.addWidget(self.decode_output)
+
+        summary = QGroupBox("Capture")
+        grid = QGridLayout(summary)
+        headings = ("", "Transitions", "Duty", "Min high", "Min low", "Frequency", "Jitter")
+        for column_index, text in enumerate(headings):
+            grid.addWidget(QLabel(text), 0, column_index)
+        self.measurements = []
+        for channel in range(LOGIC_CHANNELS):
+            grid.addWidget(QLabel(f"D{channel} ({self.PINS[channel]})"), channel + 1, 0)
+            labels = [QLabel("—") for _ in headings[1:]]
+            for column_index, label in enumerate(labels, 1):
+                grid.addWidget(label, channel + 1, column_index)
+            self.measurements.append(labels)
+        self.logic_state = QLabel("Idle")
+        self.logic_counts = QLabel("Trigger misses 0  |  Overruns 0  |  DMA errors 0")
+        grid.addWidget(self.logic_state, LOGIC_CHANNELS + 1, 0)
+        grid.addWidget(self.logic_counts, LOGIC_CHANNELS + 1, 1, 1, len(headings) - 1)
+
+        # Eight channels of readout are taller than the traces they describe. Scrolling
+        # the readout lets the plot keep its height on a short window, and the splitter
+        # lets the reader trade one against the other.
+        readout = QWidget()
+        readout_layout = QVBoxLayout(readout)
+        readout_layout.setContentsMargins(0, 0, 0, 0)
+        readout_layout.addWidget(decode)
+        readout_layout.addWidget(summary)
+        readout_layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidget(readout)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setMinimumHeight(120)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self.plot)
+        splitter.addWidget(scroll)
+        splitter.setChildrenCollapsible(False)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        page.addWidget(splitter, 1)
+
+        self.arm.clicked.connect(self._arm)
+        self.run.clicked.connect(self._run)
+        self.stop.clicked.connect(self.stop_requested)
+        self.trigger_mode.currentIndexChanged.connect(self._trigger_mode_changed)
+        self.decoder.currentIndexChanged.connect(self._decoder_changed)
+        for combo in self.decode_channels:
+            combo.currentIndexChanged.connect(self._decode)
+        self.baud.valueChanged.connect(self._decode)
+        self._trigger_mode_changed()
+        self._decoder_changed()
+        self.set_enabled(False, False)
+
+    def _arm(self) -> None:
+        self.arm_requested.emit(self.config())
+
+    def _run(self) -> None:
+        self.run_requested.emit(self.config())
+
+    def _trigger_mode_changed(self) -> None:
+        mode = self.trigger_mode.currentData()
+        self.trigger_channel.setEnabled(mode in (1, 2))
+        for combo in self.pattern:
+            combo.setEnabled(mode == 3)
+
+    def _decoder_changed(self) -> None:
+        names = self.DECODERS[self.decoder.currentData()]
+        for slot, label in enumerate(self.decode_labels):
+            used = slot < len(names)
+            label.setText(names[slot] if used else "")
+            label.setVisible(used)
+            self.decode_channels[slot].setVisible(used)
+        uart = self.decoder.currentData() == "UART"
+        self.baud.setVisible(uart)
+        self.baud_label.setVisible(uart)
+        self._decode()
+
+    def config(self) -> LogicConfig:
+        mask = value = 0
+        for channel, combo in enumerate(self.pattern):
+            level = combo.currentData()
+            if level is not None:
+                mask |= 1 << channel
+                value |= level << channel
+        return LogicConfig(
+            self.sample_rate.currentData(),
+            self.sample_count.currentData(),
+            self.trigger_mode.currentData(),
+            self.trigger_channel.currentData(),
+            mask,
+            value,
+            round(self.pretrigger.value() * 10),
+        )
+
+    def apply_status(self, status: LogicStatus, live: bool = False) -> None:
+        states = ("Idle", "Armed", "Complete", "Fault")
+        if live and status.state != 3:
+            state = "Live"
+        else:
+            state = states[status.state] if status.state < len(states) else "Unknown"
+        rate = status.actual_rate or status.sample_rate
+        self.logic_state.setText(f"{state} at {rate / 1e6:.3f} MS/s")
+        self.logic_counts.setText(
+            f"Trigger misses {status.trigger_misses}  |  Overruns {status.overruns}  |  "
+            f"DMA errors {status.dma_errors}"
+        )
+
+    def apply_capture(self, capture: LogicCapture) -> None:
+        self._capture = capture
+        rate = capture.status.actual_rate or capture.status.sample_rate
+        at = (np.arange(len(capture.samples)) - capture.status.trigger_index) * 1e6 / rate
+        steps = np.repeat(at, 2)[1:]
+        for channel, curve in enumerate(self.traces):
+            bits = channel_bits(capture.samples, channel)
+            curve.setData(steps, np.repeat(bits * 0.7 + channel, 2)[:-1])
+        self.plot.setXRange(float(at[0]), float(at[-1]))
+        for channel, labels in enumerate(self.measurements):
+            result = logic_measure(capture.samples, channel, rate)
+            labels[0].setText(str(result.transitions))
+            labels[1].setText(f"{result.duty * 100:.1f} %")
+            labels[2].setText(format_duration(result.shortest_high))
+            labels[3].setText(format_duration(result.shortest_low))
+            labels[4].setText(f"{result.frequency / 1000:.3f} kHz" if result.frequency else "—")
+            labels[5].setText(format_duration(result.jitter))
+        self._decode()
+
+    def _decode(self) -> None:
+        name = self.decoder.currentData()
+        if self._capture is None or name == "Off":
+            self.decode_output.setPlainText("")
+            return
+        capture = self._capture
+        rate = capture.status.actual_rate or capture.status.sample_rate
+        channels = [combo.currentData() for combo in self.decode_channels]
+        try:
+            if name == "UART":
+                symbols = decode_uart(capture.samples, channels[0], rate, self.baud.value())
+            elif name == "SPI":
+                symbols = decode_spi(capture.samples, channels[0], channels[1], channels[2])
+            else:
+                symbols = decode_i2c(capture.samples, channels[0], channels[1])
+        except ValueError as exc:
+            self.decode_output.setPlainText(str(exc))
+            return
+        if not symbols:
+            self.decode_output.setPlainText("No symbols decoded")
+            return
+        origin = capture.status.trigger_index
+        self.decode_output.setPlainText(
+            "\n".join(
+                f"{(symbol.start - origin) * 1e6 / rate:10.3f} us  {symbol.text}"
+                for symbol in symbols
+            )
+        )
+
+    def set_enabled(
+        self,
+        connected: bool,
+        busy: bool,
+        state: int = 0,
+        live: bool = False,
+        transferring: bool = False,
+        stopping: bool = False,
+    ) -> None:
+        editable = connected and not busy and not transferring and state != 1 and not live
+        for widget in (self.sample_rate, self.sample_count, self.trigger_mode, self.pretrigger):
+            widget.setEnabled(editable)
+        mode = self.trigger_mode.currentData()
+        self.trigger_channel.setEnabled(editable and mode in (1, 2))
+        for combo in self.pattern:
+            combo.setEnabled(editable and mode == 3)
+        self.arm.setEnabled(editable)
+        self.run.setEnabled(editable)
+        self.stop.setEnabled(connected and not stopping and (live or state in (1, 2, 3)))
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -697,6 +1046,12 @@ class MainWindow(QMainWindow):
         self._scope_config = None
         self._scope_transfer = False
         self._scope_stopping = False
+        self._logic_status = None
+        self._logic_read_id = None
+        self._logic_live = False
+        self._logic_config = None
+        self._logic_transfer = False
+        self._logic_stopping = False
 
         self.setWindowTitle("STM32 Mixed-Signal Instrument")
         self.setMinimumSize(1050, 700)
@@ -757,6 +1112,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(awg_page, "Waveform Generator")
         self.scope = ScopePanel()
         tabs.addTab(self.scope, "Oscilloscope")
+        self.logic = LogicPanel()
+        tabs.addTab(self.logic, "Logic Analyzer")
         page.addWidget(tabs, 1)
 
         self.setCentralWidget(root)
@@ -806,10 +1163,15 @@ class MainWindow(QMainWindow):
         self.scope.arm_requested.connect(self._arm_scope)
         self.scope.run_requested.connect(self._run_scope)
         self.scope.stop_requested.connect(self._stop_scope)
+        self.logic.arm_requested.connect(self._arm_logic)
+        self.logic.run_requested.connect(self._run_logic)
+        self.logic.stop_requested.connect(self._stop_logic)
         self._session.connected.connect(self._on_connected)
         self._session.status_changed.connect(self._on_statuses)
         self._session.scope_status_changed.connect(self._on_scope_status)
         self._session.capture_ready.connect(self._on_capture)
+        self._session.logic_status_changed.connect(self._on_logic_status)
+        self._session.logic_capture_ready.connect(self._on_logic_capture)
         self._session.disconnected.connect(self._on_disconnected)
         self._session.error.connect(self._on_error)
         self._session.busy_changed.connect(self._set_busy)
@@ -906,6 +1268,28 @@ class MainWindow(QMainWindow):
         self._set_busy(True)
         self._session.stop_scope()
 
+    def _arm_logic(self, config: LogicConfig) -> None:
+        self._set_logic_live(False)
+        self._logic_config = config
+        self._logic_read_id = None
+        self._set_busy(True)
+        self._session.arm_logic(config)
+
+    def _run_logic(self, config: LogicConfig) -> None:
+        self._set_logic_live(True)
+        self._logic_config = config
+        self._logic_read_id = None
+        self._set_busy(True)
+        self._session.arm_logic(config)
+
+    def _stop_logic(self) -> None:
+        if self._logic_stopping:
+            return
+        self._logic_stopping = True
+        self._set_logic_live(False)
+        self._set_busy(True)
+        self._session.stop_logic()
+
     def _poll(self) -> None:
         if self._connected and not self._busy and not self._polling:
             self._polling = True
@@ -962,6 +1346,31 @@ class MainWindow(QMainWindow):
         prefix = "Live" if self._scope_live else "Capture"
         self.statusBar().showMessage(f"{prefix} {capture.status.capture_id} received")
 
+    def _on_logic_status(self, status: LogicStatus) -> None:
+        self._logic_status = status
+        if status.state == 0:
+            self._logic_stopping = False
+        if status.state == 3:
+            self._set_logic_live(False)
+        self.logic.apply_status(status, self._logic_live)
+        if (
+            status.state == 2
+            and status.capture_id != self._logic_read_id
+            and not self._busy
+            and not self._logic_transfer
+        ):
+            self._logic_read_id = status.capture_id
+            self._logic_transfer = True
+            rearm = self._logic_config if self._logic_live else None
+            self._session.read_logic_capture(status, rearm)
+        self._update_controls()
+
+    def _on_logic_capture(self, capture: LogicCapture) -> None:
+        self._logic_transfer = False
+        self.logic.apply_capture(capture)
+        prefix = "Live logic" if self._logic_live else "Logic capture"
+        self.statusBar().showMessage(f"{prefix} {capture.status.capture_id} received")
+
     def _apply_statuses(self, statuses: list[Status]) -> None:
         for status in statuses:
             self._statuses[status.channel] = status
@@ -988,6 +1397,12 @@ class MainWindow(QMainWindow):
         self._scope_config = None
         self._scope_transfer = False
         self._scope_stopping = False
+        self._logic_status = None
+        self._logic_read_id = None
+        self._set_logic_live(False)
+        self._logic_config = None
+        self._logic_transfer = False
+        self._logic_stopping = False
         self._poll_timer.stop()
         self.connection_label.setText("Disconnected")
         self.connect_button.setText("Connect")
@@ -1000,6 +1415,9 @@ class MainWindow(QMainWindow):
         self._set_scope_live(False)
         self._scope_transfer = False
         self._scope_stopping = False
+        self._set_logic_live(False)
+        self._logic_transfer = False
+        self._logic_stopping = False
         self.statusBar().showMessage(f"Error: {message}")
 
     def _set_busy(self, busy: bool) -> None:
@@ -1008,7 +1426,14 @@ class MainWindow(QMainWindow):
 
     def _set_scope_live(self, live: bool) -> None:
         self._scope_live = live
-        self._poll_timer.setInterval(100 if live else 500)
+        self._apply_poll_interval()
+
+    def _set_logic_live(self, live: bool) -> None:
+        self._logic_live = live
+        self._apply_poll_interval()
+
+    def _apply_poll_interval(self) -> None:
+        self._poll_timer.setInterval(100 if self._scope_live or self._logic_live else 500)
 
     def _update_controls(self) -> None:
         if not hasattr(self, "port_combo"):
@@ -1033,6 +1458,15 @@ class MainWindow(QMainWindow):
             self._scope_live,
             self._scope_transfer,
             self._scope_stopping,
+        )
+        logic_state = self._logic_status.state if self._logic_status else 0
+        self.logic.set_enabled(
+            self._connected,
+            self._busy,
+            logic_state,
+            self._logic_live,
+            self._logic_transfer,
+            self._logic_stopping,
         )
 
     def closeEvent(self, event) -> None:

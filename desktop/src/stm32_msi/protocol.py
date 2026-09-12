@@ -25,6 +25,11 @@ class Command(IntEnum):
     SCOPE_STOP = 13
     SCOPE_STATUS = 14
     SCOPE_READ = 15
+    LOGIC_CONFIG = 16
+    LOGIC_ARM = 17
+    LOGIC_STOP = 18
+    LOGIC_STATUS = 19
+    LOGIC_READ = 20
 
 
 @dataclass(frozen=True)

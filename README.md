@@ -4,8 +4,9 @@ A PC-controlled waveform generator, oscilloscope and logic analyzer built around
 an STM32F407G-DISC1.
 
 **Status:** the two-channel AWG covers 1 Hz to 20 kHz on PA4 and PA5. The desktop
-application controls both outputs and captures two analog inputs on PC4 and PC5 at
-100 kS/s to 1 MS/s. Analog characterization remains open.
+application controls both outputs, captures two analog inputs on PC4 and PC5 at
+100 kS/s to 1 MS/s, and captures eight logic inputs on PE7..PE14 at 1 to 10 MS/s.
+Analog characterization and logic timing limits remain open.
 
 ## Platform
 
@@ -18,7 +19,7 @@ application controls both outputs and captures two analog inputs on PC4 and PC5 
 
 | Directory | Contents |
 | --- | --- |
-| `firmware/` | AWG application, host C tests, CubeMX initialization and vendor drivers |
+| `firmware/` | Instrument application, host C tests, CubeMX initialization and vendor drivers |
 | `desktop/` | Python package and host tests |
 | `protocol/` | Shared communication contract |
 | `docs/` | Architecture and roadmap |
@@ -50,7 +51,21 @@ The oscilloscope captures 64 to 2048 simultaneous sample pairs from PC4 and PC5.
 It supports free-run, rising and falling triggers, adjustable pre-trigger position,
 single or continuously refreshed plots, time/div and volts/div scaling, pan/zoom,
 and basic voltage and timing measurements.
-Logic inputs are planned.
+
+## Logic analyzer
+
+Eight inputs on PE7..PE14 are sampled together at a requested 1, 2, 5 or 10 MS/s;
+the timer divides 168 MHz, so the application reports the rate actually programmed.
+Captures hold 64 to 4096 samples with free-run, edge and masked-pattern triggers and
+an adjustable pre-trigger position. The desktop view draws eight traces, measures
+transitions, duty, shortest pulse, frequency and edge jitter per channel, and decodes
+UART, SPI and I2C.
+
+GPIO sampling has no overrun flag. A pulse shorter than one sample interval can be
+missed without any indication, and bus contention moves the sampling instant. The
+reported overrun count comes from DMA FIFO errors, which detect that the controller
+fell behind but do not prove that every sampling instant was captured. Minimum
+reliable pulse width and timing variation are unmeasured; 10 MS/s is an experiment.
 
 This is an unprotected low-voltage prototype. Inputs must stay within the board's
 actual supply/reference limits. No mains, negative-voltage or automotive inputs.

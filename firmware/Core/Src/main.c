@@ -30,6 +30,7 @@
 #include "awg.h"
 #include "usb_control.h"
 #include "scope.h"
+#include "logic.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -100,6 +101,7 @@ int main(void)
   MX_USB_DEVICE_Init();
   MX_ADC1_Init();
   MX_ADC2_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   uint32_t led_tick = HAL_GetTick();
   if (awg_configure(AWG_SINE, 1000U) != AWG_OK || awg_start() != AWG_OK)
@@ -117,13 +119,17 @@ int main(void)
     /* USER CODE BEGIN 3 */
     awg_process();
     scope_process();
+    logic_process();
     usb_control_poll();
     uint32_t now = HAL_GetTick();
     awg_status_t awg_status = awg_get_status();
     scope_status_t scope_status = scope_get_status();
-    bool fault = awg_status.state == AWG_FAULT || scope_status.state == SCOPE_FAULT;
+    logic_status_t logic_status = logic_get_status();
+    bool fault = awg_status.state == AWG_FAULT || scope_status.state == SCOPE_FAULT ||
+                 logic_status.state == LOGIC_FAULT;
     bool active = awg_status.state == AWG_RUNNING || scope_status.state == SCOPE_ARMED ||
-                  scope_status.state == SCOPE_COMPLETE;
+                  scope_status.state == SCOPE_COMPLETE || logic_status.state == LOGIC_ARMED ||
+                  logic_status.state == LOGIC_COMPLETE;
     uint32_t interval = fault ? 100U : 500U;
     if (fault || active)
     {

@@ -7,6 +7,7 @@ import pytest
 from PySide6.QtCore import QEventLoop, QThread, QTimer
 from PySide6.QtWidgets import QApplication
 
+from stm32_msi.instrument import LogicConfig
 from stm32_msi.protocol import Command
 from stm32_msi.session import DeviceSession
 
@@ -17,6 +18,8 @@ class TransportStub:
         self.state = 1
         self.waveforms = [0, 0]
         self.frequencies = [1000, 1000]
+        self.logic_state = 0
+        self.logic_rate = 1_000_000
         self.closed = False
 
     def request(self, command, payload=b""):
@@ -53,6 +56,25 @@ class TransportStub:
             )
         if command == Command.SCOPE_STATUS:
             return struct.pack("<BIHHIIII", 0, 100_000, 512, 256, 0, 0, 0, 0)
+        if command == Command.LOGIC_CONFIG:
+            self.logic_rate = struct.unpack_from("<I", payload)[0]
+        elif command == Command.LOGIC_ARM:
+            self.logic_state = 1
+        elif command == Command.LOGIC_STOP:
+            self.logic_state = 0
+        if command == Command.LOGIC_STATUS:
+            return struct.pack(
+                "<BIIHHIIII",
+                self.logic_state,
+                self.logic_rate,
+                self.logic_rate,
+                1024,
+                512,
+                0,
+                0,
+                0,
+                0,
+            )
         return b""
 
     def close(self):
@@ -121,5 +143,16 @@ def test_session_runs_connection_and_commands_on_worker_thread(app):
         assert status.channel == 1
         assert status.waveform == 3
         assert status.requested_hz == pytest.approx(123.456)
+
+        # Every command also reports scope and logic state, so drain those first.
+        app.processEvents()
+        (logic,) = wait_for(
+            session.logic_status_changed,
+            lambda: session.arm_logic(LogicConfig(sample_rate=2_000_000)),
+        )
+        assert logic.state == 1
+        assert logic.sample_rate == 2_000_000
+        (logic,) = wait_for(session.logic_status_changed, session.stop_logic)
+        assert logic.state == 0
     finally:
         session.shutdown()

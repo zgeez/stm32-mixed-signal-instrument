@@ -13,6 +13,8 @@ class _DeviceWorker(QObject):
     status_changed = Signal(object)
     scope_status_changed = Signal(object)
     capture_ready = Signal(object)
+    logic_status_changed = Signal(object)
+    logic_capture_ready = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -39,6 +41,7 @@ class _DeviceWorker(QObject):
             statuses = self._read_statuses()
             self.connected.emit(name, capabilities, statuses)
             self.scope_status_changed.emit(self._instrument.scope_status())
+            self.logic_status_changed.emit(self._instrument.logic_status())
         except (OSError, RuntimeError, ValueError) as exc:
             self.error.emit(str(exc))
             self._close(True)
@@ -131,6 +134,37 @@ class _DeviceWorker(QObject):
             if isinstance(exc, OSError):
                 self._close(True)
 
+    @Slot(object)
+    def arm_logic(self, config) -> None:
+        def arm(device):
+            device.configure_logic(config)
+            device.arm_logic()
+
+        self._run(arm)
+
+    @Slot()
+    def stop_logic(self) -> None:
+        self._run(lambda device: device.stop_logic())
+
+    @Slot(object, object)
+    def read_logic_capture(self, status, rearm_config) -> None:
+        if self._instrument is None:
+            self.error.emit("Device is not connected")
+            return
+        try:
+            capture = self._instrument.read_logic_capture(status)
+            if rearm_config is not None:
+                self._instrument.configure_logic(rearm_config)
+                self._instrument.arm_logic()
+            else:
+                self._instrument.stop_logic()
+            self.logic_capture_ready.emit(capture)
+            self.logic_status_changed.emit(self._instrument.logic_status())
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.error.emit(str(exc))
+            if isinstance(exc, OSError):
+                self._close(True)
+
     def _run(self, command, report_busy: bool = True) -> None:
         if self._instrument is None:
             self.error.emit("Device is not connected")
@@ -143,6 +177,7 @@ class _DeviceWorker(QObject):
             command(self._instrument)
             self.status_changed.emit(self._read_statuses())
             self.scope_status_changed.emit(self._instrument.scope_status())
+            self.logic_status_changed.emit(self._instrument.logic_status())
         except (OSError, RuntimeError, ValueError) as exc:
             self.error.emit(str(exc))
             if isinstance(exc, OSError):
@@ -174,6 +209,8 @@ class DeviceSession(QObject):
     status_changed = Signal(object)
     scope_status_changed = Signal(object)
     capture_ready = Signal(object)
+    logic_status_changed = Signal(object)
+    logic_capture_ready = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -187,6 +224,9 @@ class DeviceSession(QObject):
     _arm_scope_requested = Signal(object)
     _stop_scope_requested = Signal()
     _read_capture_requested = Signal(object, object)
+    _arm_logic_requested = Signal(object)
+    _stop_logic_requested = Signal()
+    _read_logic_capture_requested = Signal(object, object)
 
     def __init__(self, transport_factory=Transport, parent=None):
         super().__init__(parent)
@@ -203,10 +243,15 @@ class DeviceSession(QObject):
         self._arm_scope_requested.connect(self._worker.arm_scope)
         self._stop_scope_requested.connect(self._worker.stop_scope)
         self._read_capture_requested.connect(self._worker.read_capture)
+        self._arm_logic_requested.connect(self._worker.arm_logic)
+        self._stop_logic_requested.connect(self._worker.stop_logic)
+        self._read_logic_capture_requested.connect(self._worker.read_logic_capture)
         self._worker.connected.connect(self.connected)
         self._worker.status_changed.connect(self.status_changed)
         self._worker.scope_status_changed.connect(self.scope_status_changed)
         self._worker.capture_ready.connect(self.capture_ready)
+        self._worker.logic_status_changed.connect(self.logic_status_changed)
+        self._worker.logic_capture_ready.connect(self.logic_capture_ready)
         self._worker.disconnected.connect(self.disconnected)
         self._worker.error.connect(self.error)
         self._worker.busy_changed.connect(self.busy_changed)
@@ -256,6 +301,15 @@ class DeviceSession(QObject):
 
     def read_capture(self, status, rearm_config=None) -> None:
         self._read_capture_requested.emit(status, rearm_config)
+
+    def arm_logic(self, config) -> None:
+        self._arm_logic_requested.emit(config)
+
+    def stop_logic(self) -> None:
+        self._stop_logic_requested.emit()
+
+    def read_logic_capture(self, status, rearm_config=None) -> None:
+        self._read_logic_capture_requested.emit(status, rearm_config)
 
     def shutdown(self) -> None:
         if not self._thread.isRunning():

@@ -14,9 +14,8 @@
 | 9. Characterization | Measured limits, error budgets and performance reports | Repeatable measurements with configuration and equipment recorded |
 | 10. Distribution | Packaged desktop releases, firmware installation and compatibility checks | Clean-machine install, flash, verification, reconnect and upgrade tests |
 
-Bring-up, USB control, the desktop foundation and Milestone 4 digital checks pass.
-Dual-output analog measurements and characterization remain open. See
-[validation](validation.md).
+Milestones 0 through 5 pass their host and board checks. Analog accuracy and bandwidth
+characterization remain in milestone 9. See [validation](validation.md).
 
 ADC progression: 100 kS/s, 500 kS/s, then 1 MS/s if validated. GPIO acquisition
 starts at 1 MS/s, followed by 2 and 5 MS/s; 10 MS/s is an experiment. These are

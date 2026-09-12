@@ -54,7 +54,8 @@ class Transport:
                 raise OSError("Incomplete command write")
             deadline = time.monotonic() + self.timeout
             while time.monotonic() < deadline:
-                for frame in self.decoder.feed(self.serial.read(64)):
+                available = self.serial.in_waiting
+                for frame in self.decoder.feed(self.serial.read(available or 1)):
                     if frame.sequence != self.sequence or frame.command != (command | 0x80):
                         continue
                     if frame.version != VERSION or not frame.payload:

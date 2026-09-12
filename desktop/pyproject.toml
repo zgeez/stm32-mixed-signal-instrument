@@ -7,7 +7,7 @@ name = "stm32-msi-desktop"
 version = "0.1.0"
 description = "PC software for the STM32 Mixed-Signal Instrument"
 requires-python = ">=3.11"
-dependencies = ["pyserial>=3.5,<4", "PySide6>=6.8,<7"]
+dependencies = ["numpy>=2,<3", "pyqtgraph>=0.13.7,<1", "pyserial>=3.5,<4", "PySide6>=6.8,<7"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "ruff>=0.11,<1"]

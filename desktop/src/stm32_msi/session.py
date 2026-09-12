@@ -11,6 +11,8 @@ from .transport import Transport
 class _DeviceWorker(QObject):
     connected = Signal(str, object, object)
     status_changed = Signal(object)
+    scope_status_changed = Signal(object)
+    capture_ready = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -36,6 +38,7 @@ class _DeviceWorker(QObject):
             self._capabilities = capabilities
             statuses = self._read_statuses()
             self.connected.emit(name, capabilities, statuses)
+            self.scope_status_changed.emit(self._instrument.scope_status())
         except (OSError, RuntimeError, ValueError) as exc:
             self.error.emit(str(exc))
             self._close(True)
@@ -63,30 +66,70 @@ class _DeviceWorker(QObject):
         phase_degrees: float,
         samples,
     ) -> None:
-        def apply(device):
-            if self._capabilities.get("channels", 1) < 2:
-                device.configure(waveform, round(frequency_hz))
-                return
-            if samples is not None:
-                device.upload_arbitrary(channel, samples)
-            device.configure_channel(
+        self._run(
+            lambda device: self._configure(
+                device,
                 channel,
                 waveform,
                 frequency_hz,
                 amplitude_percent,
                 offset_percent,
                 phase_degrees,
+                samples,
             )
+        )
+
+    def _configure(self, device, channel, waveform, frequency, amplitude, offset, phase, samples):
+        if self._capabilities.get("channels", 1) < 2:
+            device.configure(waveform, round(frequency))
+            return
+        if samples is not None:
+            device.upload_arbitrary(channel, samples)
+        device.configure_channel(channel, waveform, frequency, amplitude, offset, phase)
+
+    @Slot(object)
+    def start(self, configurations) -> None:
+        def apply(device):
+            for configuration in configurations or ():
+                self._configure(device, *configuration)
+            device.start()
 
         self._run(apply)
 
     @Slot()
-    def start(self) -> None:
-        self._run(lambda device: device.start())
-
-    @Slot()
     def stop(self) -> None:
         self._run(lambda device: device.stop())
+
+    @Slot(object)
+    def arm_scope(self, config) -> None:
+        def arm(device):
+            device.configure_scope(config)
+            device.arm_scope()
+
+        self._run(arm)
+
+    @Slot()
+    def stop_scope(self) -> None:
+        self._run(lambda device: device.stop_scope())
+
+    @Slot(object, object)
+    def read_capture(self, status, rearm_config) -> None:
+        if self._instrument is None:
+            self.error.emit("Device is not connected")
+            return
+        try:
+            capture = self._instrument.read_capture(status)
+            if rearm_config is not None:
+                self._instrument.configure_scope(rearm_config)
+                self._instrument.arm_scope()
+            else:
+                self._instrument.stop_scope()
+            self.capture_ready.emit(capture)
+            self.scope_status_changed.emit(self._instrument.scope_status())
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.error.emit(str(exc))
+            if isinstance(exc, OSError):
+                self._close(True)
 
     def _run(self, command, report_busy: bool = True) -> None:
         if self._instrument is None:
@@ -99,6 +142,7 @@ class _DeviceWorker(QObject):
         try:
             command(self._instrument)
             self.status_changed.emit(self._read_statuses())
+            self.scope_status_changed.emit(self._instrument.scope_status())
         except (OSError, RuntimeError, ValueError) as exc:
             self.error.emit(str(exc))
             if isinstance(exc, OSError):
@@ -128,6 +172,8 @@ class _DeviceWorker(QObject):
 class DeviceSession(QObject):
     connected = Signal(str, object, object)
     status_changed = Signal(object)
+    scope_status_changed = Signal(object)
+    capture_ready = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -136,8 +182,11 @@ class DeviceSession(QObject):
     _close_requested = Signal()
     _refresh_requested = Signal()
     _configure_requested = Signal(int, str, float, float, float, float, object)
-    _start_requested = Signal()
+    _start_requested = Signal(object)
     _stop_requested = Signal()
+    _arm_scope_requested = Signal(object)
+    _stop_scope_requested = Signal()
+    _read_capture_requested = Signal(object, object)
 
     def __init__(self, transport_factory=Transport, parent=None):
         super().__init__(parent)
@@ -151,8 +200,13 @@ class DeviceSession(QObject):
         self._configure_requested.connect(self._worker.configure)
         self._start_requested.connect(self._worker.start)
         self._stop_requested.connect(self._worker.stop)
+        self._arm_scope_requested.connect(self._worker.arm_scope)
+        self._stop_scope_requested.connect(self._worker.stop_scope)
+        self._read_capture_requested.connect(self._worker.read_capture)
         self._worker.connected.connect(self.connected)
         self._worker.status_changed.connect(self.status_changed)
+        self._worker.scope_status_changed.connect(self.scope_status_changed)
+        self._worker.capture_ready.connect(self.capture_ready)
         self._worker.disconnected.connect(self.disconnected)
         self._worker.error.connect(self.error)
         self._worker.busy_changed.connect(self.busy_changed)
@@ -188,11 +242,20 @@ class DeviceSession(QObject):
             samples,
         )
 
-    def start(self) -> None:
-        self._start_requested.emit()
+    def start(self, configurations=None) -> None:
+        self._start_requested.emit(configurations)
 
     def stop(self) -> None:
         self._stop_requested.emit()
+
+    def arm_scope(self, config) -> None:
+        self._arm_scope_requested.emit(config)
+
+    def stop_scope(self) -> None:
+        self._stop_scope_requested.emit()
+
+    def read_capture(self, status, rearm_config=None) -> None:
+        self._read_capture_requested.emit(status, rearm_config)
 
     def shutdown(self) -> None:
         if not self._thread.isRunning():

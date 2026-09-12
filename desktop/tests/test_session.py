@@ -51,6 +51,8 @@ class TransportStub:
                 0,
                 0,
             )
+        if command == Command.SCOPE_STATUS:
+            return struct.pack("<BIHHIIII", 0, 100_000, 512, 256, 0, 0, 0, 0)
         return b""
 
     def close(self):
@@ -100,6 +102,15 @@ def test_session_runs_connection_and_commands_on_worker_thread(app):
 
         (statuses,) = wait_for(session.status_changed, session.start)
         assert all(status.state == 2 for status in statuses)
+        (statuses,) = wait_for(session.status_changed, session.stop)
+        assert all(status.state == 1 for status in statuses)
+        configurations = [
+            (0, "triangle", 250, 75, 50, 0, None),
+            (1, "sawtooth", 500, 60, 50, 90, None),
+        ]
+        (statuses,) = wait_for(session.status_changed, lambda: session.start(configurations))
+        assert [item.waveform for item in statuses] == [1, 3]
+        assert [item.requested_hz for item in statuses] == [250, 500]
         (statuses,) = wait_for(session.status_changed, session.stop)
         assert all(status.state == 1 for status in statuses)
         (statuses,) = wait_for(

@@ -1,6 +1,7 @@
 #include "commands.h"
 
 #include "awg.h"
+#include "scope.h"
 #include <string.h>
 
 static void put_u32(uint8_t *out, uint32_t value)
@@ -41,6 +42,11 @@ static bool valid_length(const protocol_frame_t *request)
                request->length == (uint8_t)(4U + 2U * request->payload[3]);
     case CMD_AWG_COMMIT:
         return request->length == 3U;
+    case CMD_SCOPE_CONFIG:
+        return request->length == 12U;
+    case CMD_SCOPE_READ:
+        return request->length == 7U && request->payload[6] >= 1U &&
+               request->payload[6] <= 12U;
     default:
         return request->length == 0U;
     }
@@ -56,7 +62,7 @@ void command_execute(const protocol_frame_t *request, protocol_frame_t *reply)
         reply->payload[0] = REPLY_VERSION;
         return;
     }
-    if (request->command < CMD_HELLO || request->command > CMD_AWG_COMMIT) {
+    if (request->command < CMD_HELLO || request->command > CMD_SCOPE_READ) {
         reply->payload[0] = REPLY_COMMAND;
         return;
     }
@@ -148,6 +154,53 @@ void command_execute(const protocol_frame_t *request, protocol_frame_t *reply)
     case CMD_AWG_COMMIT:
         result = awg_commit_arbitrary(request->payload[0], get_u16(request->payload + 1));
         break;
+    case CMD_SCOPE_CONFIG: {
+        scope_config_t config = {.sample_rate = get_u32(request->payload),
+                                 .sample_count = get_u16(request->payload + 4),
+                                 .trigger_channel = request->payload[6],
+                                 .trigger_edge = (scope_trigger_edge_t)request->payload[7],
+                                 .trigger_level = get_u16(request->payload + 8),
+                                 .pretrigger_permille = get_u16(request->payload + 10)};
+        result = (awg_result_t)scope_configure(&config);
+        break;
+    }
+    case CMD_SCOPE_ARM:
+        result = (awg_result_t)scope_arm();
+        break;
+    case CMD_SCOPE_STOP:
+        result = (awg_result_t)scope_stop();
+        break;
+    case CMD_SCOPE_STATUS: {
+        scope_status_t scope = scope_get_status();
+        reply->payload[1] = (uint8_t)scope.state;
+        put_u32(reply->payload + 2, scope.config.sample_rate);
+        put_u16(reply->payload + 6, scope.config.sample_count);
+        put_u16(reply->payload + 8, scope.trigger_index);
+        put_u32(reply->payload + 10, scope.capture_id);
+        put_u32(reply->payload + 14, scope.trigger_misses);
+        put_u32(reply->payload + 18, scope.overruns);
+        put_u32(reply->payload + 22, scope.dma_errors);
+        reply->length = 26U;
+        break;
+    }
+    case CMD_SCOPE_READ: {
+        uint32_t samples[12];
+        uint32_t capture_id = get_u32(request->payload);
+        uint16_t offset = get_u16(request->payload + 4);
+        uint8_t count = request->payload[6];
+        if (!scope_read(capture_id, offset, count, samples)) {
+            result = AWG_INVALID;
+            break;
+        }
+        put_u32(reply->payload + 1, capture_id);
+        put_u16(reply->payload + 5, offset);
+        reply->payload[7] = count;
+        for (uint8_t i = 0U; i < count; ++i) {
+            put_u32(reply->payload + 8U + 4U * i, samples[i]);
+        }
+        reply->length = (uint8_t)(8U + 4U * count);
+        break;
+    }
     }
     switch (result) {
     case AWG_OK:

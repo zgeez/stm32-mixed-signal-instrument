@@ -39,6 +39,35 @@ class Status:
         return self.frequency_millihz / 1000
 
 
+@dataclass(frozen=True)
+class ScopeConfig:
+    sample_rate: int = 100_000
+    sample_count: int = 512
+    trigger_channel: int = 0
+    trigger_edge: int = 0
+    trigger_level: int = 2048
+    pretrigger_permille: int = 500
+
+
+@dataclass(frozen=True)
+class ScopeStatus:
+    state: int
+    sample_rate: int
+    sample_count: int
+    trigger_index: int
+    capture_id: int
+    trigger_misses: int
+    overruns: int
+    dma_errors: int
+
+
+@dataclass(frozen=True)
+class Capture:
+    status: ScopeStatus
+    channel_1: tuple[int, ...]
+    channel_2: tuple[int, ...]
+
+
 class Instrument:
     def __init__(self, transport: Transport):
         self.transport = transport
@@ -135,3 +164,51 @@ class Instrument:
 
     def stop(self) -> None:
         self.transport.request(Command.AWG_STOP)
+
+    def configure_scope(self, config: ScopeConfig) -> None:
+        if config.sample_rate not in (100_000, 500_000, 1_000_000):
+            raise ValueError("Sample rate must be 100, 500 or 1000 kS/s")
+        if not 64 <= config.sample_count <= 2048:
+            raise ValueError("Sample count must be between 64 and 2048")
+        if config.trigger_channel not in (0, 1) or config.trigger_edge not in (0, 1, 2):
+            raise ValueError("Invalid trigger source or edge")
+        if not 0 <= config.trigger_level <= 4095 or not 0 <= config.pretrigger_permille <= 900:
+            raise ValueError("Trigger level or position is outside its range")
+        self.transport.request(
+            Command.SCOPE_CONFIG,
+            struct.pack(
+                "<IHBBHH",
+                config.sample_rate,
+                config.sample_count,
+                config.trigger_channel,
+                config.trigger_edge,
+                config.trigger_level,
+                config.pretrigger_permille,
+            ),
+        )
+
+    def arm_scope(self) -> None:
+        self.transport.request(Command.SCOPE_ARM)
+
+    def stop_scope(self) -> None:
+        self.transport.request(Command.SCOPE_STOP)
+
+    def scope_status(self) -> ScopeStatus:
+        return ScopeStatus(
+            *struct.unpack("<BIHHIIII", self.transport.request(Command.SCOPE_STATUS))
+        )
+
+    def read_capture(self, status: ScopeStatus) -> Capture:
+        first, second = [], []
+        for offset in range(0, status.sample_count, 12):
+            count = min(12, status.sample_count - offset)
+            payload = self.transport.request(
+                Command.SCOPE_READ, struct.pack("<IHB", status.capture_id, offset, count)
+            )
+            capture_id, returned_offset, returned_count = struct.unpack_from("<IHB", payload)
+            if (capture_id, returned_offset, returned_count) != (status.capture_id, offset, count):
+                raise RuntimeError("Capture chunk does not match the request")
+            packed = struct.unpack_from(f"<{count}I", payload, 7)
+            first.extend(value & 0xFFFF for value in packed)
+            second.extend(value >> 16 for value in packed)
+        return Capture(status, tuple(first), tuple(second))

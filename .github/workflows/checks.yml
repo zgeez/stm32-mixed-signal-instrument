@@ -19,6 +19,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - run: sudo apt-get update && sudo apt-get install -y libegl1
       - run: python -m pip install -e './desktop[dev]'
       - run: python -m pytest -c desktop/pyproject.toml desktop/tests
       - run: python -m ruff check desktop

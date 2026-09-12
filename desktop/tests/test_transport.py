@@ -16,6 +16,7 @@ class SerialStub:
         self.silent = False
         self.short_write = False
         self.requests = []
+        self.read_sizes = []
 
     def reset_input_buffer(self):
         self.incoming.clear()
@@ -54,10 +55,15 @@ class SerialStub:
             self.incoming.extend(encode(stale) + encode(reply))
         return len(wire)
 
-    def read(self, _size):
+    def read(self, size):
+        self.read_sizes.append(size)
         data = bytes(self.incoming[:1])
         del self.incoming[:1]
         return data
+
+    @property
+    def in_waiting(self):
+        return len(self.incoming)
 
     def close(self):
         self.closed = True
@@ -75,6 +81,7 @@ def test_fragmented_reply_and_stale_sequence(transport):
     assert Instrument(transport).hello() == "STM32-MSI"
     assert transport.sequence == 0
     assert Instrument(transport).status().actual_millihz == 1000000
+    assert max(transport.serial.read_sizes) > 1
 
 
 def test_device_error_keeps_connection(transport):

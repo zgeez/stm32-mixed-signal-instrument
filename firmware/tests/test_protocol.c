@@ -1,6 +1,7 @@
 #include "protocol.h"
 #include "commands.h"
 #include "awg.h"
+#include "scope.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,8 @@ static uint8_t last_channel;
 static awg_config_t last_config;
 static uint16_t last_offset;
 static uint8_t last_count;
+static scope_config_t last_scope_config;
+static uint32_t scope_samples[12];
 
 awg_result_t awg_configure(awg_waveform_t shape, uint32_t hz)
 {
@@ -85,6 +88,31 @@ bool awg_get_channel_status(uint8_t channel, awg_channel_status_t *out)
                                   .arbitrary_length = 17U};
     return true;
 }
+scope_result_t scope_configure(const scope_config_t *config)
+{
+    last_scope_config = *config;
+    ++calls;
+    return (scope_result_t)result;
+}
+scope_result_t scope_arm(void) { ++calls; return (scope_result_t)result; }
+scope_result_t scope_stop(void) { ++calls; return (scope_result_t)result; }
+scope_status_t scope_get_status(void)
+{
+    return (scope_status_t){.state = SCOPE_COMPLETE,
+                            .config = {.sample_rate = 500000U, .sample_count = 512U},
+                            .trigger_index = 128U,
+                            .capture_id = 9U,
+                            .trigger_misses = 4U,
+                            .overruns = 2U,
+                            .dma_errors = 1U};
+}
+bool scope_read(uint32_t capture_id, uint16_t offset, uint8_t count, uint32_t *samples)
+{
+    if (capture_id != 9U || offset + count > 512U) return false;
+    for (uint8_t i = 0; i < count; ++i) samples[i] = scope_samples[i];
+    return true;
+}
+void scope_process(void) {}
 
 static unsigned unhex(const char *text, uint8_t *out)
 {
@@ -220,6 +248,33 @@ int main(int argc, char **argv)
     frame.length = 7U;
     command_execute(&frame, &reply);
     CHECK(reply.payload[0] == REPLY_INVALID);
+
+    frame.command = CMD_SCOPE_CONFIG;
+    frame.length = 12U;
+    const uint8_t scope_config[] = {0x20, 0xa1, 0x07, 0x00, 0x00, 0x02,
+                                    1, 2, 0x00, 0x08, 0xfa, 0x00};
+    memcpy(frame.payload, scope_config, sizeof scope_config);
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[0] == REPLY_OK && last_scope_config.sample_rate == 500000U);
+    CHECK(last_scope_config.sample_count == 512U && last_scope_config.trigger_channel == 1U);
+    CHECK(last_scope_config.trigger_edge == SCOPE_TRIGGER_FALLING);
+    CHECK(last_scope_config.trigger_level == 2048U && last_scope_config.pretrigger_permille == 250U);
+
+    frame.command = CMD_SCOPE_STATUS;
+    frame.length = 0U;
+    command_execute(&frame, &reply);
+    CHECK(reply.length == 26U && reply.payload[1] == SCOPE_COMPLETE);
+    CHECK(reply.payload[10] == 9U && reply.payload[14] == 4U && reply.payload[18] == 2U);
+
+    scope_samples[0] = 100U | (200U << 16);
+    scope_samples[1] = 300U | (400U << 16);
+    frame.command = CMD_SCOPE_READ;
+    frame.length = 7U;
+    const uint8_t read_request[] = {9, 0, 0, 0, 0, 0, 2};
+    memcpy(frame.payload, read_request, sizeof read_request);
+    command_execute(&frame, &reply);
+    CHECK(reply.length == 16U && reply.payload[0] == REPLY_OK);
+    CHECK(reply.payload[8] == 100U && reply.payload[10] == 200U);
     puts("Protocol vectors, bounds, malformed frames and command validation passed.");
     return 0;
 }

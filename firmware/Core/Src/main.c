@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
 #include "dac.h"
 #include "dma.h"
 #include "tim.h"
@@ -28,6 +29,7 @@
 /* USER CODE BEGIN Includes */
 #include "awg.h"
 #include "usb_control.h"
+#include "scope.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,10 +95,13 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_DAC_Init();
+  MX_TIM2_Init();
   MX_TIM6_Init();
   MX_USB_DEVICE_Init();
+  MX_ADC1_Init();
+  MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
-  uint32_t heartbeat = HAL_GetTick();
+  uint32_t led_tick = HAL_GetTick();
   if (awg_configure(AWG_SINE, 1000U) != AWG_OK || awg_start() != AWG_OK)
   {
     Error_Handler();
@@ -111,11 +116,27 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     awg_process();
+    scope_process();
     usb_control_poll();
-    if ((uint32_t)(HAL_GetTick() - heartbeat) >= 500U)
+    uint32_t now = HAL_GetTick();
+    awg_status_t awg_status = awg_get_status();
+    scope_status_t scope_status = scope_get_status();
+    bool fault = awg_status.state == AWG_FAULT || scope_status.state == SCOPE_FAULT;
+    bool active = awg_status.state == AWG_RUNNING || scope_status.state == SCOPE_ARMED ||
+                  scope_status.state == SCOPE_COMPLETE;
+    uint32_t interval = fault ? 100U : 500U;
+    if (fault || active)
     {
-      heartbeat = HAL_GetTick();
-      HAL_GPIO_TogglePin(LD4_GPIO_Port, LD4_Pin);
+      if ((uint32_t)(now - led_tick) >= interval)
+      {
+        led_tick = now;
+        HAL_GPIO_TogglePin(LD4_GPIO_Port, LD4_Pin);
+      }
+    }
+    else
+    {
+      led_tick = now;
+      HAL_GPIO_WritePin(LD4_GPIO_Port, LD4_Pin, GPIO_PIN_RESET);
     }
   }
   /* USER CODE END 3 */

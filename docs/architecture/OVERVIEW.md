@@ -12,10 +12,12 @@ outside `Core/`; integration remains in generated USER CODE regions.
 | Buses | HCLK 168 MHz; APB1 42 MHz; APB2 84 MHz |
 | TIM6 | 84 MHz timer clock; PSC=0, ARR=209; 400 kHz update TRGO |
 | DAC1/2 | PA4/PA5, TIM6 trigger, output buffers enabled |
-| DMA | DAC1: DMA1 S5 C7; DAC2: DMA1 S6 C7; circular half-word transfers |
+| ADC1/2 | PC4/PC5, regular simultaneous IN14/15; 21 MHz ADC clock |
+| TIM2 | 84 MHz timer clock; TRGO at 100, 500 or 1000 kS/s |
+| DMA | DAC1: DMA1 S5 C7; DAC2: DMA1 S6 C7; ADC pair: DMA2 S0 C0 |
 | Board control | PD4 low holds audio codec in reset; PE3 high deselects motion sensor; PC0 high disables USB host power switch |
 | Debug | PA13/PA14 SWD; SysTick HAL timebase |
-| Heartbeat | Green LD4 on PD12; nonblocking 500 ms tick check |
+| Status LED | Green LD4 on PD12; off when idle, slow blink while active, fast blink on fault |
 | USB device | OTG_FS CDC, CN5; PA9 VBUS, PA11 DM, PA12 DP; 48 MHz PLLQ, IRQ priority 6 |
 
 ## AWG
@@ -34,12 +36,26 @@ combinations that exceed codes 0..4095 are rejected. Both channels start from th
 configured phase on the same timer. PA4's audio connection can load DAC1; PA5 also drives
 the deselected motion sensor's clock trace. Analog accuracy remains unmeasured.
 
-## Planned acquisition resources
+## Oscilloscope
+
+ADC1 and ADC2 sample PC4 and PC5 together from TIM2. DMA stores the combined ADC
+data register as packed 32-bit pairs. A raw block twice the requested capture length
+allows the foreground trigger search to keep the requested pre-trigger history. The
+DMA completion callback stops TIM2 before the circular stream can overwrite the block.
+Captures contain 64..2048 pairs and stop before USB transfer.
+
+Free-run, rising and falling triggers are supported on either channel. Missing edges
+rearm acquisition and have a separate counter from ADC overruns and DMA errors. The
+desktop application reads completed captures in 12-pair packets, plots both channels
+against the trigger time and calculates basic voltage and timing measurements. Live
+view repeats this finite capture and transfer cycle, with refresh rate set by capture
+length and USB transfer time. The plot appends each capture to a scrolling captured-time
+axis while retaining a bounded history.
+
+## Planned logic acquisition
 
 | Function | Candidate | Constraint |
 | --- | --- | --- |
-| Analog CH1/CH2 | PC4/PC5, ADC1/2 IN14/15 | No ADC3 mapping; triple interleaving needs another pin |
-| Scope timing | TIM2 TRGO, ADC DMA2 S0 C0 | TIM6 is not a regular ADC trigger |
 | Logic 0..7 | PE7..PE14, GPIOE IDR | Half-word reads, then `(sample >> 7) & 0xff` |
 | Logic DMA | TIM1 update, DMA2 S5 C6 | Bus latency affects sampling instant; rate must be measured |
 
@@ -57,7 +73,8 @@ give a calculated 1.4 MS/s ceiling. Source settling may require slower sampling.
 | SRAM2 | 0x2001C000 | 16 KiB | DMA buffers and shared state |
 | CCM | 0x10000000 | 64 KiB | CPU-only data; inaccessible to DMA |
 
-DMA buffers share 128 KiB with globals, stack and heap. CCM is CPU-only.
+DMA buffers share 128 KiB with globals, stack and heap. Scope capture storage uses
+24 KiB at its maximum length. CCM is CPU-only.
 
 Two ADC channels at 1 MS/s in 16-bit containers produce 4 MB/s. USB Full Speed is
 limited to 1.5 MB/s before overhead, so high-rate acquisition needs finite captures.
@@ -70,9 +87,11 @@ until completion. Reset/deconfiguration clears session data; the AWG keeps runni
 The LED uses a nonblocking tick check. FreeRTOS is deferred until integration.
 
 The CLI and PySide6 application call the same instrument model over a framed serial
-transport. Serial requests run on one Qt worker thread so timeouts cannot block the
-interface. The [protocol](../../protocol/README.md) defines commands and errors.
-Acquisition views and transfers are pending.
+transport. Serial requests and capture transfer run on one Qt worker thread so they
+cannot block the interface. Scope display scaling stays in the UI: time/div sets a
+ten-division window, volts/div sets an eight-division window, and manual pan or zoom
+pauses live following. The [protocol](../../protocol/README.md) defines commands and
+errors.
 
 ## References
 

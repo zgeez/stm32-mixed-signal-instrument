@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from stm32_msi.protocol import Decoder, Frame, decode, encode
+from stm32_msi.protocol import MAX_PAYLOAD, Decoder, Frame, decode, encode
 
 
 def vectors():
@@ -36,7 +36,7 @@ def test_recovery_and_combined_frames():
     assert len(decoder.buffer) == 0
 
 
-@pytest.mark.parametrize("size", range(33))
+@pytest.mark.parametrize("size", range(MAX_PAYLOAD + 1))
 def test_all_payload_sizes(size):
     for value in (0, 1, 255):
         frame = Frame(3, 65535, bytes([value]) * size)
@@ -45,7 +45,7 @@ def test_all_payload_sizes(size):
 
 def test_invalid_lengths():
     with pytest.raises(ValueError):
-        encode(Frame(1, 0, bytes(33)))
-    for data in (b"", b"\xff", b"\x01\x01", bytes(39)):
+        encode(Frame(1, 0, bytes(MAX_PAYLOAD + 1)))
+    for data in (b"", b"\xff", b"\x01\x01", bytes(64)):
         with pytest.raises(ValueError):
             decode(data)

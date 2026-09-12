@@ -9,10 +9,10 @@ checked by both C and Python tests.
 | 0 | Version, u8; currently 1 |
 | 1 | Command, u8 |
 | 2 | Request sequence, u16 |
-| 4 | Payload length, u8; maximum 32 |
+| 4 | Payload length, u8; maximum 57 |
 | 5 | Payload |
 
-Maximum wire length is 39 bytes including delimiter. Replies echo the sequence,
+Maximum wire length is 64 bytes including delimiter. Replies echo the sequence,
 set command bit 7, and prepend a status byte to the payload. There is no application
 CRC. USB handles link integrity; the parser validates framing and payload lengths.
 
@@ -28,6 +28,11 @@ CRC. USB handles link integrity; the parser validates framing and payload length
 | 8 | AWG_STATUS_EXT | Channel u8 | State u8, channel u8, waveform u8, requested mHz u32, actual mHz u32, amplitude u16, offset u16, phase u16, underruns u32, DMA errors u32, refill misses u32, arbitrary length u16 |
 | 9 | AWG_UPLOAD | Channel u8, offset u16, count u8, 1..14 DAC codes u16 | Empty |
 | 10 | AWG_COMMIT | Channel u8, total samples u16 | Empty |
+| 11 | SCOPE_CONFIG | Rate u32, count u16, trigger channel u8, edge u8, level u16, pre-trigger permille u16 | Empty |
+| 12 | SCOPE_ARM | Empty | Empty |
+| 13 | SCOPE_STOP | Empty | Empty |
+| 14 | SCOPE_STATUS | Empty | State u8, rate u32, count u16, trigger index u16, capture ID u32, trigger misses u32, overruns u32, DMA errors u32 |
+| 15 | SCOPE_READ | Capture ID u32, offset u16, count u8 | Capture ID u32, offset u16, count u8, packed sample pairs u32 |
 
 Commands 1 through 6 retain their original layout. Extended commands address channels
 0 and 1. Waveforms: 0 sine, 1 triangle, 2 square, 3 sawtooth, 4 DC, 5 arbitrary.
@@ -50,4 +55,9 @@ The client permits one outstanding request. Opening sends a delimiter to clear a
 partial frame. On timeout or transport failure it closes the connection; command
 execution may already have occurred, so reconnect and query status before retrying.
 Sequence numbers correlate responses; they do not provide duplicate suppression.
-Acquisition transfer formats are deferred.
+
+Scope rates are 100, 500 and 1000 kS/s. Captures contain 64..2048 simultaneous
+sample pairs from PC4 and PC5. Edge values are 0 free-run, 1 rising and 2 falling;
+trigger level is a 12-bit ADC code. Each read returns at most 12 pairs, with CH1 in
+bits 0..15 and CH2 in bits 16..31. Scope states are 0 idle, 1 armed, 2 complete and
+3 fault.

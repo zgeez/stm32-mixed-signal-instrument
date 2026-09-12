@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 VERSION = 1
-MAX_PAYLOAD = 32
-MAX_ENCODED = 38
+MAX_PAYLOAD = 57
+MAX_ENCODED = 63
 
 
 class Command(IntEnum):
@@ -20,6 +20,11 @@ class Command(IntEnum):
     AWG_STATUS_EXT = 8
     AWG_UPLOAD = 9
     AWG_COMMIT = 10
+    SCOPE_CONFIG = 11
+    SCOPE_ARM = 12
+    SCOPE_STOP = 13
+    SCOPE_STATUS = 14
+    SCOPE_READ = 15
 
 
 @dataclass(frozen=True)
@@ -32,7 +37,7 @@ class Frame:
 
 def encode(frame: Frame) -> bytes:
     if len(frame.payload) > MAX_PAYLOAD:
-        raise ValueError("Payload exceeds 32 bytes")
+        raise ValueError(f"Payload exceeds {MAX_PAYLOAD} bytes")
     raw = struct.pack("<BBHB", frame.version, frame.command, frame.sequence, len(frame.payload))
     out = bytearray(b"\0")
     code_at, code = 0, 1

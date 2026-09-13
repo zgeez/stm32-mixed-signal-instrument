@@ -38,6 +38,10 @@ CRC. USB handles link integrity; the parser validates framing and payload length
 | 18 | LOGIC_STOP | Empty | Empty |
 | 19 | LOGIC_STATUS | Empty | State u8, requested rate u32, actual rate u32, count u16, trigger index u16, capture ID u32, trigger misses u32, overruns u32, DMA errors u32 |
 | 20 | LOGIC_READ | Capture ID u32, offset u16, count u8 | Capture ID u32, offset u16, count u8, channel bytes |
+| 21 | DEVICE_STATUS | Empty | Owner u8, conflicts u32, AWG state u8, underruns u32, DMA errors u32, refill misses u32, scope state u8, capture ID u32, trigger misses u32, overruns u32, DMA errors u32, logic state u8, capture ID u32, trigger misses u32, overruns u32, DMA errors u32 |
+| 22 | RTOS_STATUS | Empty | Task count u8, stack headroom u32 per task, heap free u32, heap low water u32 |
+| 23 | PROBE_CONFIG | Frequency Hz u32, duty permille u16 | Empty |
+| 24 | PROBE_STATUS | Empty | Enabled u8, requested Hz u32, actual Hz u32, duty permille u16, prescaler u16, reload u16 |
 
 Commands 1 through 6 retain their original layout. Extended commands address channels
 0 and 1. Waveforms: 0 sine, 1 triangle, 2 square, 3 sawtooth, 4 DC, 5 arbitrary.
@@ -74,5 +78,19 @@ channels D0..D7 on PE7..PE14, one byte per sample with D0 in bit 0. Trigger mode
 0 free-run, 1 rising, 2 falling and 3 pattern. Edge modes use the channel field;
 pattern mode compares `(sample & mask) == (value & mask)` and fires on entry, so mask
 must select at least one channel. Each read returns at most 48 samples. Logic states
-match the scope's: 0 idle, 1 armed, 2 complete and 3 fault. Logic and scope acquisition
-use separate DMA streams but are not yet coordinated; run one at a time.
+match the scope's: 0 idle, 1 armed, 2 complete and 3 fault. Acquisition ownership is described below.
+
+DEVICE_STATUS combines subsystem state and counters in one reply. Configuration
+remains available through the individual status commands.
+
+Scope and logic share exclusive acquisition ownership. Arm claims it; Stop or fault
+releases it; Complete retains it for reading/rearming. Conflicting Arm requests return
+busy (2) and increment conflicts. Owner values: 0 none, 1 scope, 2 logic.
+
+RTOS_STATUS gives minimum free stack bytes in task order (awg, acquire, control,
+status), followed by current and minimum free heap bytes.
+
+PROBE_CONFIG controls TIM3 PWM on PC6: zero Hz disables it; otherwise request 1 Hz
+to 42 MHz and duty 1..999 permille. Integer dividers limit achievable frequency;
+PROBE_STATUS reports the programmed rate and registers. Compare values are clamped
+to keep the output toggling.

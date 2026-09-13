@@ -15,6 +15,10 @@ awg_refill_event_t awg_refill_complete(awg_refill_t *refill, uint8_t channel, ui
         (refill->active_channels & BIT(channel)) == 0U) {
         return AWG_REFILL_WAITING;
     }
+    /* This stream is now reading the opposite half, even if its peer IRQ is pending. */
+    if (((refill->pending | refill->refilling) & BIT(half ^ 1U)) != 0U) {
+        return AWG_REFILL_MISSED;
+    }
     refill->completed[half] |= BIT(channel);
     if (refill->completed[half] != refill->active_channels) {
         return AWG_REFILL_WAITING;

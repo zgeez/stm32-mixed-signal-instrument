@@ -15,6 +15,7 @@ class _DeviceWorker(QObject):
     capture_ready = Signal(object)
     logic_status_changed = Signal(object)
     logic_capture_ready = Signal(object)
+    device_status_changed = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -42,6 +43,7 @@ class _DeviceWorker(QObject):
             self.connected.emit(name, capabilities, statuses)
             self.scope_status_changed.emit(self._instrument.scope_status())
             self.logic_status_changed.emit(self._instrument.logic_status())
+            self.device_status_changed.emit(self._instrument.device_status())
         except (OSError, RuntimeError, ValueError) as exc:
             self.error.emit(str(exc))
             self._close(True)
@@ -56,7 +58,17 @@ class _DeviceWorker(QObject):
 
     @Slot()
     def refresh(self) -> None:
-        self._run(lambda device: None, report_busy=False)
+        """Poll the unified snapshot; three separate status reads would cost three
+        round trips per tick and make the UI sluggish under load."""
+        if self._instrument is None:
+            self.error.emit("Device is not connected")
+            return
+        try:
+            self.device_status_changed.emit(self._instrument.device_status())
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.error.emit(str(exc))
+            if isinstance(exc, OSError):
+                self._close(True)
 
     @Slot(int, str, float, float, float, float, object)
     def configure(
@@ -178,6 +190,7 @@ class _DeviceWorker(QObject):
             self.status_changed.emit(self._read_statuses())
             self.scope_status_changed.emit(self._instrument.scope_status())
             self.logic_status_changed.emit(self._instrument.logic_status())
+            self.device_status_changed.emit(self._instrument.device_status())
         except (OSError, RuntimeError, ValueError) as exc:
             self.error.emit(str(exc))
             if isinstance(exc, OSError):
@@ -211,6 +224,7 @@ class DeviceSession(QObject):
     capture_ready = Signal(object)
     logic_status_changed = Signal(object)
     logic_capture_ready = Signal(object)
+    device_status_changed = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -252,6 +266,7 @@ class DeviceSession(QObject):
         self._worker.capture_ready.connect(self.capture_ready)
         self._worker.logic_status_changed.connect(self.logic_status_changed)
         self._worker.logic_capture_ready.connect(self.logic_capture_ready)
+        self._worker.device_status_changed.connect(self.device_status_changed)
         self._worker.disconnected.connect(self.disconnected)
         self._worker.error.connect(self.error)
         self._worker.busy_changed.connect(self.busy_changed)

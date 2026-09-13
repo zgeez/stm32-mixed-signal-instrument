@@ -30,7 +30,7 @@ void usb_control_receive(const uint8_t *data, uint32_t length)
     }
 }
 
-void usb_control_poll(void)
+bool usb_control_poll(void)
 {
     static protocol_parser_t parser;
     static uint32_t seen_epoch, last_byte;
@@ -46,19 +46,20 @@ void usb_control_poll(void)
     USBD_CDC_HandleTypeDef *cdc = hUsbDeviceFS.pClassData;
     if (!connected || hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED || cdc == NULL) {
         __set_PRIMASK(mask);
-        return;
+        return false;
     }
     /* Keep tx unchanged until the middleware releases its pointer. */
     if (cdc->TxState != 0U) {
         __set_PRIMASK(mask);
-        return;
+        return false;
     }
     if (pending != 0U) {
-        if (CDC_Transmit_FS(tx, pending) == USBD_OK) {
+        bool sent = CDC_Transmit_FS(tx, pending) == USBD_OK;
+        if (sent) {
             pending = 0U;
         }
         __set_PRIMASK(mask);
-        return;
+        return sent;
     }
     uint32_t now = HAL_GetTick();
     if ((uint32_t)(now - last_byte) > 500U) {
@@ -66,14 +67,14 @@ void usb_control_poll(void)
     }
     if (!received) {
         __set_PRIMASK(mask);
-        return;
+        return false;
     }
     if (rx_at == rx_size) {
         rx_at = 0U;
         received = false;
         USBD_CDC_ReceivePacket(&hUsbDeviceFS);
         __set_PRIMASK(mask);
-        return;
+        return true;
     }
     uint8_t byte = rx[rx_at++];
     uint32_t request_epoch = epoch;
@@ -89,4 +90,5 @@ void usb_control_poll(void)
         }
         __set_PRIMASK(mask);
     }
+    return true;
 }

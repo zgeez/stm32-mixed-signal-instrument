@@ -30,6 +30,10 @@ class Command(IntEnum):
     LOGIC_STOP = 18
     LOGIC_STATUS = 19
     LOGIC_READ = 20
+    DEVICE_STATUS = 21
+    RTOS_STATUS = 22
+    PROBE_CONFIG = 23
+    PROBE_STATUS = 24
 
 
 @dataclass(frozen=True)

@@ -39,6 +39,7 @@ typedef struct {
     uint16_t low;
     const uint16_t *arbitrary;
     uint16_t arbitrary_length;
+    uint16_t arbitrary_codes[AWG_ARBITRARY_MAX_SAMPLES];
 } awg_generator_t;
 
 bool awg_config_valid(const awg_config_t *config, uint16_t arbitrary_length);

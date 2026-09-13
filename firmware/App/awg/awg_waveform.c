@@ -64,6 +64,15 @@ bool awg_generator_init(awg_generator_t *generator, const awg_config_t *config,
     generator->low = (uint16_t)(center - (generator->span + 1U) / 2U);
     generator->arbitrary = arbitrary;
     generator->arbitrary_length = arbitrary_length;
+    if (config->waveform == AWG_ARBITRARY) {
+        /* Scale once while stopped; the DMA refill only needs phase lookup. */
+        for (uint16_t i = 0U; i < arbitrary_length; ++i) {
+            uint32_t normalized = ((uint32_t)arbitrary[i] * UINT16_MAX + 2047U) /
+                                  AWG_DAC_MAX_CODE;
+            generator->arbitrary_codes[i] = (uint16_t)(generator->low +
+                (normalized * generator->span + 32767U) / UINT16_MAX);
+        }
+    }
     return generator->phase_increment != 0U;
 }
 
@@ -115,6 +124,16 @@ uint16_t awg_generator_next(awg_generator_t *generator)
 void awg_generator_render(awg_generator_t *generator, uint16_t *samples, uint16_t count)
 {
     if (generator == NULL || samples == NULL) {
+        return;
+    }
+    if (generator->config.waveform == AWG_ARBITRARY) {
+        uint32_t phase = generator->phase;
+        for (uint16_t i = 0U; i < count; ++i) {
+            uint16_t index = (uint16_t)(((uint64_t)phase * generator->arbitrary_length) >> 32U);
+            samples[i] = generator->arbitrary_codes[index];
+            phase += generator->phase_increment;
+        }
+        generator->phase = phase;
         return;
     }
     for (uint16_t i = 0; i < count; ++i) {

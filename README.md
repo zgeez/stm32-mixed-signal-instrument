@@ -11,7 +11,7 @@ Analog characterization and logic timing limits remain open.
 ## Platform
 
 - STM32F407VGT6, Cortex-M4F, 168 MHz
-- C, STM32 HAL, CMake, Ninja and Arm GNU Toolchain
+- C, STM32 HAL, FreeRTOS with CMSIS-RTOS v2, CMake, Ninja and Arm GNU Toolchain
 - Python desktop package with a PySide6 interface
 - Native USB CDC for device control and finite capture transfer
 
@@ -61,11 +61,15 @@ an adjustable pre-trigger position. The desktop view draws eight traces, measure
 transitions, duty, shortest pulse, frequency and edge jitter per channel, and decodes
 UART, SPI and I2C.
 
-GPIO sampling has no overrun flag. A pulse shorter than one sample interval can be
-missed without any indication, and bus contention moves the sampling instant. The
-reported overrun count comes from DMA FIFO errors, which detect that the controller
-fell behind but do not prove that every sampling instant was captured. Minimum
-reliable pulse width and timing variation are unmeasured; 10 MS/s is an experiment.
+Short pulses can be missed without a DMA error. Asynchronous pulse limits remain
+uncharacterized; 10 MS/s is experimental.
+
+## Concurrency
+
+FreeRTOS separates waveform refill, acquisition, USB control and status.
+Scope and logic acquisition are mutually exclusive; AWG can run alongside either.
+Board checks cover concurrent load, stack headroom, refill latency, fault recovery
+and USB backpressure.
 
 This is an unprotected low-voltage prototype. Inputs must stay within the board's
 actual supply/reference limits. No mains, negative-voltage or automotive inputs.

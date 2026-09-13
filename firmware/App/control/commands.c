@@ -2,7 +2,10 @@
 
 #include "awg.h"
 #include "logic.h"
+#include "ownership.h"
+#include "probe.h"
 #include "scope.h"
+#include "tasks.h"
 #include <string.h>
 
 static void put_u32(uint8_t *out, uint32_t value)
@@ -50,6 +53,8 @@ static bool valid_length(const protocol_frame_t *request)
                request->payload[6] <= 12U;
     case CMD_LOGIC_CONFIG:
         return request->length == 12U;
+    case CMD_PROBE_CONFIG:
+        return request->length == 6U;
     case CMD_LOGIC_READ:
         return request->length == 7U && request->payload[6] >= 1U &&
                request->payload[6] <= LOGIC_READ_MAX;
@@ -68,7 +73,7 @@ void command_execute(const protocol_frame_t *request, protocol_frame_t *reply)
         reply->payload[0] = REPLY_VERSION;
         return;
     }
-    if (request->command < CMD_HELLO || request->command > CMD_LOGIC_READ) {
+    if (request->command < CMD_HELLO || request->command > CMD_PROBE_STATUS) {
         reply->payload[0] = REPLY_COMMAND;
         return;
     }
@@ -252,6 +257,58 @@ void command_execute(const protocol_frame_t *request, protocol_frame_t *reply)
         reply->payload[7] = count;
         memcpy(reply->payload + 8, samples, count);
         reply->length = (uint8_t)(8U + count);
+        break;
+    }
+    case CMD_DEVICE_STATUS: {
+        awg_channel_status_t awg = {0};
+        (void)awg_get_channel_status(0U, &awg);
+        scope_status_t scope = scope_get_status();
+        logic_status_t logic = logic_get_status();
+        reply->payload[1] = (uint8_t)ownership_current(&acquisition_ownership);
+        put_u32(reply->payload + 2, ownership_conflicts(&acquisition_ownership));
+        reply->payload[6] = (uint8_t)awg.state;
+        put_u32(reply->payload + 7, awg.underruns);
+        put_u32(reply->payload + 11, awg.dma_errors);
+        put_u32(reply->payload + 15, awg.refill_misses);
+        reply->payload[19] = (uint8_t)scope.state;
+        put_u32(reply->payload + 20, scope.capture_id);
+        put_u32(reply->payload + 24, scope.trigger_misses);
+        put_u32(reply->payload + 28, scope.overruns);
+        put_u32(reply->payload + 32, scope.dma_errors);
+        reply->payload[36] = (uint8_t)logic.state;
+        put_u32(reply->payload + 37, logic.capture_id);
+        put_u32(reply->payload + 41, logic.trigger_misses);
+        put_u32(reply->payload + 45, logic.overruns);
+        put_u32(reply->payload + 49, logic.dma_errors);
+        reply->length = 53U;
+        break;
+    }
+    case CMD_RTOS_STATUS: {
+        reply->payload[1] = (uint8_t)TASK_COUNT;
+        for (uint8_t task = 0U; task < (uint8_t)TASK_COUNT; ++task) {
+            put_u32(reply->payload + 2U + 4U * task, tasks_stack_headroom((app_task_t)task));
+        }
+        put_u32(reply->payload + 2U + 4U * (uint8_t)TASK_COUNT, tasks_heap_free());
+        put_u32(reply->payload + 6U + 4U * (uint8_t)TASK_COUNT, tasks_heap_low_water());
+        reply->length = (uint8_t)(10U + 4U * (uint8_t)TASK_COUNT);
+        break;
+    }
+    case CMD_PROBE_CONFIG: {
+        uint32_t frequency = get_u32(request->payload);
+        uint16_t duty = get_u16(request->payload + 4);
+        result = (awg_result_t)(frequency == 0U ? probe_disable()
+                                                : probe_configure(frequency, duty));
+        break;
+    }
+    case CMD_PROBE_STATUS: {
+        probe_status_t probe = probe_get_status();
+        reply->payload[1] = probe.enabled ? 1U : 0U;
+        put_u32(reply->payload + 2, probe.requested_hz);
+        put_u32(reply->payload + 6, probe.actual_hz);
+        put_u16(reply->payload + 10, probe.duty_permille);
+        put_u16(reply->payload + 12, probe.prescaler);
+        put_u16(reply->payload + 14, probe.reload);
+        reply->length = 16U;
         break;
     }
     }

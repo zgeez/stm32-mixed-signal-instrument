@@ -3,6 +3,9 @@
 #include "awg.h"
 #include "scope.h"
 #include "logic.h"
+#include "ownership.h"
+#include "probe.h"
+#include "tasks.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -142,6 +145,33 @@ bool logic_read(uint32_t capture_id, uint16_t offset, uint8_t count, uint8_t *sa
     return true;
 }
 void logic_process(void) {}
+uint32_t tasks_stack_headroom(app_task_t task)
+{
+    return 100U + (uint32_t)task;
+}
+uint32_t tasks_heap_free(void) { return 4096U; }
+static probe_status_t probe_state;
+probe_result_t probe_configure(uint32_t frequency_hz, uint16_t duty_permille)
+{
+    probe_divider_t divider;
+    if (!probe_divider(frequency_hz, duty_permille, &divider)) {
+        return PROBE_INVALID;
+    }
+    probe_state = (probe_status_t){.enabled = true,
+                                   .requested_hz = frequency_hz,
+                                   .actual_hz = divider.actual_hz,
+                                   .duty_permille = duty_permille,
+                                   .prescaler = divider.prescaler,
+                                   .reload = divider.reload};
+    return PROBE_OK;
+}
+probe_result_t probe_disable(void)
+{
+    probe_state.enabled = false;
+    return PROBE_OK;
+}
+probe_status_t probe_get_status(void) { return probe_state; }
+uint32_t tasks_heap_low_water(void) { return 2048U; }
 
 static unsigned unhex(const char *text, uint8_t *out)
 {
@@ -163,8 +193,10 @@ int main(int argc, char **argv)
     FILE *file = fopen(argv[1], "r");
     CHECK(file != NULL);
     unsigned version, command, sequence, vectors = 0;
-    char payload[65], wire[79];
-    while (fscanf(file, "%u %u %u %64s %78s", &version, &command, &sequence, payload, wire) == 5) {
+    /* Two hex digits per byte, plus a terminator: a full 57-byte payload needs 115
+       and a full 64-byte frame needs 129. */
+    char payload[PROTOCOL_PAYLOAD_MAX * 2 + 1], wire[PROTOCOL_FRAME_MAX * 2 + 1];
+    while (fscanf(file, "%u %u %u %114s %128s", &version, &command, &sequence, payload, wire) == 5) {
         protocol_frame_t frame = {.version = (uint8_t)version,
                                   .command = (uint8_t)command,
                                   .sequence = (uint16_t)sequence};
@@ -184,7 +216,7 @@ int main(int argc, char **argv)
         ++vectors;
     }
     fclose(file);
-    CHECK(vectors == 7);
+    CHECK(vectors == 8);
     protocol_parser_t parser = {0};
     protocol_frame_t frame = {.version = 1, .command = CMD_STATUS, .sequence = 7}, decoded;
     for (unsigned i = 0; i < 200; ++i) {
@@ -337,10 +369,60 @@ int main(int argc, char **argv)
     command_execute(&frame, &reply);
     CHECK(reply.payload[0] == REPLY_INVALID);
 
-    frame.command = CMD_LOGIC_READ + 1U;
+    ownership_claim(&acquisition_ownership, ACQUISITION_LOGIC);
+    frame.command = CMD_DEVICE_STATUS;
     frame.length = 0U;
     command_execute(&frame, &reply);
+    CHECK(reply.length == 53U && reply.payload[0] == REPLY_OK);
+    CHECK(reply.payload[1] == ACQUISITION_LOGIC);
+    CHECK(reply.payload[6] == AWG_READY && reply.payload[15] == 3U);
+    CHECK(reply.payload[19] == SCOPE_COMPLETE && reply.payload[20] == 9U);
+    CHECK(reply.payload[36] == LOGIC_COMPLETE && reply.payload[37] == 7U);
+    CHECK(!ownership_claim(&acquisition_ownership, ACQUISITION_SCOPE));
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[2] == 1U); /* The rejected claim is visible to the host. */
+    ownership_release(&acquisition_ownership, ACQUISITION_LOGIC);
+
+    frame.command = CMD_RTOS_STATUS;
+    command_execute(&frame, &reply);
+    CHECK(reply.length == 10U + 4U * TASK_COUNT && reply.payload[0] == REPLY_OK);
+    CHECK(reply.payload[1] == TASK_COUNT && reply.payload[2] == 100U);
+    CHECK(reply.payload[2U + 4U * TASK_COUNT] == 0U);
+
+    frame.command = CMD_PROBE_STATUS + 1U;
+    command_execute(&frame, &reply);
     CHECK(reply.payload[0] == REPLY_COMMAND);
+
+    frame.command = CMD_PROBE_CONFIG;
+    frame.length = 6U;
+    const uint8_t probe_request[] = {0x40, 0x42, 0x0f, 0x00, 0xf4, 0x01};
+    memcpy(frame.payload, probe_request, sizeof probe_request);
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[0] == REPLY_OK);
+
+    frame.command = CMD_PROBE_STATUS;
+    frame.length = 0U;
+    command_execute(&frame, &reply);
+    CHECK(reply.length == 16U && reply.payload[1] == 1U);
+    CHECK(reply.payload[2] == 0x40U && reply.payload[3] == 0x42U); /* 1,000,000 Hz */
+    CHECK(reply.payload[6] == 0x40U && reply.payload[7] == 0x42U); /* reached exactly */
+
+    frame.command = CMD_PROBE_CONFIG;
+    frame.length = 6U;
+    memset(frame.payload, 0, 6U);
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[0] == REPLY_OK); /* zero frequency disables */
+    frame.command = CMD_PROBE_STATUS;
+    frame.length = 0U;
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[1] == 0U);
+
+    frame.command = CMD_PROBE_CONFIG;
+    frame.length = 6U;
+    const uint8_t too_fast[] = {0x00, 0x00, 0x00, 0x80, 0xf4, 0x01};
+    memcpy(frame.payload, too_fast, sizeof too_fast);
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[0] == REPLY_INVALID);
 
     puts("Protocol vectors, bounds, malformed frames and command validation passed.");
     return 0;

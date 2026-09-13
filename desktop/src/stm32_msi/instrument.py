@@ -22,6 +22,10 @@ LOGIC_RATES = (1_000_000, 2_000_000, 5_000_000, 10_000_000)
 LOGIC_MAX_SAMPLES = 4096
 LOGIC_READ_MAX = 48
 TIMER_CLOCK_HZ = 168_000_000
+PROBE_CLOCK_HZ = 84_000_000
+PROBE_MAX_HZ = PROBE_CLOCK_HZ // 2
+ACQUISITION_OWNERS = ("none", "scope", "logic")
+TASK_NAMES = ("awg", "acquire", "control", "status")
 
 
 @dataclass(frozen=True)
@@ -109,6 +113,91 @@ def logic_actual_rate(sample_rate: int) -> int:
         raise ValueError("Sample rate must be positive")
     divider = max(1, round(TIMER_CLOCK_HZ / sample_rate))
     return TIMER_CLOCK_HZ // divider
+
+
+@dataclass(frozen=True)
+class DeviceStatus:
+    """One snapshot of every subsystem, so a poll costs a single round trip."""
+
+    owner: int
+    conflicts: int
+    awg_state: int
+    underruns: int
+    awg_dma_errors: int
+    refill_misses: int
+    scope_state: int
+    scope_capture_id: int
+    scope_trigger_misses: int
+    scope_overruns: int
+    scope_dma_errors: int
+    logic_state: int
+    logic_capture_id: int
+    logic_trigger_misses: int
+    logic_overruns: int
+    logic_dma_errors: int
+
+    @property
+    def owner_name(self) -> str:
+        return ACQUISITION_OWNERS[self.owner] if self.owner < len(ACQUISITION_OWNERS) else "?"
+
+    def scope_status(self, config: ScopeConfig) -> ScopeStatus:
+        return ScopeStatus(
+            self.scope_state,
+            config.sample_rate,
+            config.sample_count,
+            round(config.sample_count * config.pretrigger_permille / 1000),
+            self.scope_capture_id,
+            self.scope_trigger_misses,
+            self.scope_overruns,
+            self.scope_dma_errors,
+        )
+
+    def logic_status(self, config: LogicConfig) -> LogicStatus:
+        return LogicStatus(
+            self.logic_state,
+            config.sample_rate,
+            logic_actual_rate(config.sample_rate),
+            config.sample_count,
+            round(config.sample_count * config.pretrigger_permille / 1000),
+            self.logic_capture_id,
+            self.logic_trigger_misses,
+            self.logic_overruns,
+            self.logic_dma_errors,
+        )
+
+
+@dataclass(frozen=True)
+class ProbeStatus:
+    """The TIM3 reference square wave on PC6.
+
+    The DAC cannot produce an edge faster than its 2.5 us update period, which is far
+    too slow to reach the logic analyzer's limit. This output can, so it is what the
+    minimum-pulse and lossless-rate checks are driven from.
+    """
+
+    enabled: bool
+    requested_hz: int
+    actual_hz: int
+    duty_permille: int
+    prescaler: int
+    reload: int
+
+    @property
+    def half_period_ns(self) -> float | None:
+        if not self.enabled or not self.actual_hz:
+            return None
+        return 5e8 / self.actual_hz
+
+
+@dataclass(frozen=True)
+class RtosStatus:
+    stack_headroom: tuple[int, ...]
+    heap_free: int
+    heap_low_water: int
+
+    @property
+    def named_headroom(self) -> dict:
+        return dict(zip(TASK_NAMES, self.stack_headroom, strict=False))
 
 
 class Instrument:
@@ -295,6 +384,33 @@ class Instrument:
         return LogicStatus(
             *struct.unpack("<BIIHHIIII", self.transport.request(Command.LOGIC_STATUS))
         )
+
+    def device_status(self) -> DeviceStatus:
+        return DeviceStatus(
+            *struct.unpack("<BIBIIIBIIIIBIIII", self.transport.request(Command.DEVICE_STATUS))
+        )
+
+    def rtos_status(self) -> RtosStatus:
+        payload = self.transport.request(Command.RTOS_STATUS)
+        count = payload[0]
+        headroom = struct.unpack_from(f"<{count}I", payload, 1)
+        heap_free, heap_low = struct.unpack_from("<II", payload, 1 + 4 * count)
+        return RtosStatus(headroom, heap_free, heap_low)
+
+    def configure_probe(self, frequency_hz: int, duty_percent: float = 50.0) -> None:
+        """Set the reference output. A frequency of zero turns it off."""
+        if frequency_hz and not 1 <= frequency_hz <= PROBE_MAX_HZ:
+            raise ValueError(f"Probe frequency must be 1..{PROBE_MAX_HZ} Hz")
+        duty = round(duty_percent * 10)
+        if frequency_hz and not 1 <= duty <= 999:
+            raise ValueError("Probe duty must leave a real edge, 0.1..99.9 %")
+        self.transport.request(Command.PROBE_CONFIG, struct.pack("<IH", frequency_hz, duty))
+
+    def probe_status(self) -> ProbeStatus:
+        enabled, requested, actual, duty, prescaler, reload = struct.unpack(
+            "<BIIHHH", self.transport.request(Command.PROBE_STATUS)
+        )
+        return ProbeStatus(bool(enabled), requested, actual, duty, prescaler, reload)
 
     def read_logic_capture(self, status: LogicStatus) -> LogicCapture:
         samples: list[int] = []

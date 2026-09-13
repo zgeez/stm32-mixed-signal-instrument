@@ -10,6 +10,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDial,
     QDoubleSpinBox,
@@ -37,6 +38,7 @@ from .instrument import (
     MAX_ARBITRARY_SAMPLES,
     WAVEFORMS,
     Capture,
+    DeviceStatus,
     LogicCapture,
     LogicConfig,
     LogicStatus,
@@ -82,6 +84,22 @@ def parse_sample_table(text: str) -> list[int]:
     if any(not 0 <= sample <= 4095 for sample in samples):
         raise ValueError("DAC codes must be between 0 and 4095")
     return samples
+
+
+def format_per_division(value: float, unit: str) -> str:
+    """Name a division at a readable magnitude. ``unit`` is "ms" for the time axis,
+    whose data is already in milliseconds, or "V" for the vertical axis."""
+    if unit == "ms":
+        if abs(value) < 0.001:
+            return f"{value * 1e6:.3g} ns/div"
+        if abs(value) < 1.0:
+            return f"{value * 1000:.3g} us/div"
+        if abs(value) < 1000.0:
+            return f"{value:.3g} ms/div"
+        return f"{value / 1000:.3g} s/div"
+    if abs(value) < 1.0:
+        return f"{value * 1000:.3g} mV/div"
+    return f"{value:.3g} V/div"
 
 
 def format_duration(seconds: float | None) -> str:
@@ -372,6 +390,7 @@ class ScopePanel(QWidget):
         self._live_next_ms = 0.0
         self._live_block_ms = 0.0
         self._last_reference = 3.0
+        self._last_capture = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -475,6 +494,20 @@ class ScopePanel(QWidget):
             column.addWidget(QLabel(label))
             column.addWidget(widget)
             display_row.addLayout(column)
+        self.show_channel = []
+        for index, name in enumerate(("CH1", "CH2")):
+            box = QCheckBox(name)
+            box.setChecked(True)
+            box.setToolTip(f"Hide {name} and drop it from measurements and autoscale")
+            self.show_channel.append(box)
+        channel_column = QVBoxLayout()
+        channel_column.addWidget(QLabel("Channels"))
+        channel_row = QHBoxLayout()
+        for box in self.show_channel:
+            channel_row.addWidget(box)
+        channel_column.addLayout(channel_row)
+        display_row.addLayout(channel_column)
+
         self.follow = QPushButton("Follow latest")
         self.follow.setCheckable(True)
         self.follow.setChecked(True)
@@ -486,8 +519,8 @@ class ScopePanel(QWidget):
         page.addWidget(display)
 
         self.plot = pg.PlotWidget()
-        self.plot.setLabel("bottom", "Time", "ms")
-        self.plot.setLabel("left", "Input", "V")
+        self.plot.setLabel("bottom", "Time (ms)")
+        self.plot.setLabel("left", "Input (V)")
         self.plot.showGrid(x=True, y=True, alpha=0.25)
         self.plot.setYRange(0, 3.0)
         self.plot.setMouseEnabled(x=True, y=True)
@@ -528,12 +561,25 @@ class ScopePanel(QWidget):
         self.vertical_center.valueChanged.connect(self._apply_vertical_scale)
         self.follow.toggled.connect(self._follow_changed)
         self.autoscale.clicked.connect(self._autoscale)
+        for box in self.show_channel:
+            box.toggled.connect(self._channels_changed)
         self.plot.getViewBox().sigRangeChangedManually.connect(self._view_changed_manually)
         self.set_enabled(False, False)
 
+    def _channels_changed(self, *_args) -> None:
+        for curve, box in zip(
+            (self.channel_1_curve, self.channel_2_curve), self.show_channel, strict=True
+        ):
+            curve.setVisible(box.isChecked())
+        for labels, box in zip(self.measurements, self.show_channel, strict=True):
+            for label in labels:
+                label.setEnabled(box.isChecked())
+        if self._last_capture is not None:
+            self.apply_capture(self._last_capture)
+
     def _arm(self) -> None:
         self._live_display = False
-        self.plot.setLabel("bottom", "Time", "ms")
+        self.plot.setLabel("bottom", "Time (ms)")
         self.trigger_line.setVisible(True)
         self.arm_requested.emit(self.config())
 
@@ -544,7 +590,7 @@ class ScopePanel(QWidget):
         self._live_second = np.empty(0)
         self._live_next_ms = 0.0
         self._live_block_ms = 0.0
-        self.plot.setLabel("bottom", "Captured time", "ms")
+        self.plot.setLabel("bottom", "Captured time (ms)")
         self.trigger_line.setVisible(False)
         self.run_requested.emit(self.config())
 
@@ -573,6 +619,7 @@ class ScopePanel(QWidget):
         )
 
     def apply_capture(self, capture: Capture) -> None:
+        self._last_capture = capture
         reference = self.reference.value()
         self._last_reference = reference
         first = adc_volts(capture.channel_1, reference)
@@ -586,7 +633,13 @@ class ScopePanel(QWidget):
             self.channel_2_curve.setData(time_ms, second)
             self._apply_horizontal_scale()
         self._apply_vertical_scale()
-        for labels, values in zip(self.measurements, (first, second), strict=True):
+        for labels, values, box in zip(
+            self.measurements, (first, second), self.show_channel, strict=True
+        ):
+            if not box.isChecked():
+                for label in labels:
+                    label.setText("—")
+                continue
             result = measure(values, capture.status.sample_rate)
             frequency = f"{result.frequency:.3f} Hz" if result.frequency else "—"
             period = f"{result.period * 1000:.3f} ms" if result.period else "—"
@@ -631,6 +684,8 @@ class ScopePanel(QWidget):
 
     def _apply_horizontal_scale(self, *_args) -> None:
         scale = self.time_scale.currentData()
+        if scale != "custom":
+            self.time_scale.setItemText(self.time_scale.count() - 1, "Custom")
         if scale == "custom" or not self.channel_1_curve.xData.size:
             return
         if self._live_display and self.follow.isChecked():
@@ -647,6 +702,8 @@ class ScopePanel(QWidget):
 
     def _apply_vertical_scale(self, *_args) -> None:
         scale = self.voltage_scale.currentData()
+        if scale != "custom":
+            self.voltage_scale.setItemText(self.voltage_scale.count() - 1, "Custom")
         if scale == "custom":
             return
         if scale is None:
@@ -669,16 +726,19 @@ class ScopePanel(QWidget):
         self._apply_vertical_scale()
 
     def _view_changed_manually(self, axes) -> None:
+        x_range, y_range = self.plot.viewRange()
         if axes[0]:
-            self._mark_custom_scale(self.time_scale)
+            self._mark_custom_scale(self.time_scale, (x_range[1] - x_range[0]) / 10, "ms")
             if self._live_display:
                 self.follow.setChecked(False)
         if axes[1]:
-            self._mark_custom_scale(self.voltage_scale)
+            self._mark_custom_scale(self.voltage_scale, (y_range[1] - y_range[0]) / 8, "V")
 
-    @staticmethod
-    def _mark_custom_scale(combo: QComboBox) -> None:
+    def _mark_custom_scale(self, combo: QComboBox, per_division: float, unit: str) -> None:
+        """Name the division the view is actually at. "Custom" tells the reader
+        nothing, and after a pan or zoom that is exactly when they need the number."""
         combo.blockSignals(True)
+        combo.setItemText(combo.count() - 1, format_per_division(per_division, unit))
         combo.setCurrentIndex(combo.count() - 1)
         combo.blockSignals(False)
 
@@ -690,6 +750,7 @@ class ScopePanel(QWidget):
         live: bool = False,
         transferring: bool = False,
         stopping: bool = False,
+        blocked: bool = False,
     ) -> None:
         editable = connected and not busy and not transferring and state != 1 and not live
         for widget in (
@@ -702,8 +763,8 @@ class ScopePanel(QWidget):
             self.reference,
         ):
             widget.setEnabled(editable)
-        self.arm.setEnabled(editable)
-        self.run.setEnabled(editable)
+        self.arm.setEnabled(editable and not blocked)
+        self.run.setEnabled(editable and not blocked)
         self.stop.setEnabled(connected and not stopping and (live or state in (1, 2, 3)))
 
 
@@ -1012,6 +1073,7 @@ class LogicPanel(QWidget):
         live: bool = False,
         transferring: bool = False,
         stopping: bool = False,
+        blocked: bool = False,
     ) -> None:
         editable = connected and not busy and not transferring and state != 1 and not live
         for widget in (self.sample_rate, self.sample_count, self.trigger_mode, self.pretrigger):
@@ -1020,8 +1082,8 @@ class LogicPanel(QWidget):
         self.trigger_channel.setEnabled(editable and mode in (1, 2))
         for combo in self.pattern:
             combo.setEnabled(editable and mode == 3)
-        self.arm.setEnabled(editable)
-        self.run.setEnabled(editable)
+        self.arm.setEnabled(editable and not blocked)
+        self.run.setEnabled(editable and not blocked)
         self.stop.setEnabled(connected and not stopping and (live or state in (1, 2, 3)))
 
 
@@ -1052,6 +1114,7 @@ class MainWindow(QMainWindow):
         self._logic_config = None
         self._logic_transfer = False
         self._logic_stopping = False
+        self._device_status = None
 
         self.setWindowTitle("STM32 Mixed-Signal Instrument")
         self.setMinimumSize(1050, 700)
@@ -1131,7 +1194,15 @@ class MainWindow(QMainWindow):
     def _build_status_panel(self) -> QGroupBox:
         panel = QGroupBox("Device Status")
         layout = QGridLayout(panel)
-        headings = ("Device", "Connection", "AWG state", "Underruns", "DMA errors", "Refill misses")
+        headings = (
+            "Device",
+            "Connection",
+            "AWG state",
+            "Acquisition",
+            "Underruns",
+            "DMA errors",
+            "Refill misses",
+        )
         labels = []
         for column, heading in enumerate(headings):
             title = QLabel(heading)
@@ -1145,6 +1216,7 @@ class MainWindow(QMainWindow):
             self.device_label,
             self.connection_label,
             self.state_label,
+            self.acquisition_label,
             self.underrun_label,
             self.dma_error_label,
             self.refill_miss_label,
@@ -1172,6 +1244,7 @@ class MainWindow(QMainWindow):
         self._session.capture_ready.connect(self._on_capture)
         self._session.logic_status_changed.connect(self._on_logic_status)
         self._session.logic_capture_ready.connect(self._on_logic_capture)
+        self._session.device_status_changed.connect(self._on_device_status)
         self._session.disconnected.connect(self._on_disconnected)
         self._session.error.connect(self._on_error)
         self._session.busy_changed.connect(self._set_busy)
@@ -1371,6 +1444,24 @@ class MainWindow(QMainWindow):
         prefix = "Live logic" if self._logic_live else "Logic capture"
         self.statusBar().showMessage(f"{prefix} {capture.status.capture_id} received")
 
+    def _on_device_status(self, status: DeviceStatus) -> None:
+        """One snapshot drives every panel, so they can never disagree about the device."""
+        self._polling = False
+        self._device_status = status
+        states = ("Unconfigured", "Ready", "Running", "Fault")
+        self.state_label.setText(
+            states[status.awg_state] if status.awg_state < len(states) else "Unknown"
+        )
+        self.underrun_label.setText(str(status.underruns))
+        self.dma_error_label.setText(str(status.awg_dma_errors))
+        self.refill_miss_label.setText(str(status.refill_misses))
+        owner = "Free" if status.owner_name == "none" else status.owner_name.title()
+        if status.conflicts:
+            owner += f" ({status.conflicts} refused)"
+        self.acquisition_label.setText(owner)
+        self._on_scope_status(status.scope_status(self._scope_config or self.scope.config()))
+        self._on_logic_status(status.logic_status(self._logic_config or self.logic.config()))
+
     def _apply_statuses(self, statuses: list[Status]) -> None:
         for status in statuses:
             self._statuses[status.channel] = status
@@ -1403,6 +1494,7 @@ class MainWindow(QMainWindow):
         self._logic_config = None
         self._logic_transfer = False
         self._logic_stopping = False
+        self._device_status = None
         self._poll_timer.stop()
         self.connection_label.setText("Disconnected")
         self.connect_button.setText("Connect")
@@ -1419,6 +1511,11 @@ class MainWindow(QMainWindow):
         self._logic_transfer = False
         self._logic_stopping = False
         self.statusBar().showMessage(f"Error: {message}")
+
+    def _owned_by(self, other: str) -> bool:
+        """The device grants acquisition to one subsystem at a time; say so up front
+        rather than letting the user press Arm and collect a Busy reply."""
+        return self._device_status is not None and self._device_status.owner_name == other
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -1458,6 +1555,7 @@ class MainWindow(QMainWindow):
             self._scope_live,
             self._scope_transfer,
             self._scope_stopping,
+            self._owned_by("logic"),
         )
         logic_state = self._logic_status.state if self._logic_status else 0
         self.logic.set_enabled(
@@ -1467,6 +1565,7 @@ class MainWindow(QMainWindow):
             self._logic_live,
             self._logic_transfer,
             self._logic_stopping,
+            self._owned_by("scope"),
         )
 
     def closeEvent(self, event) -> None:

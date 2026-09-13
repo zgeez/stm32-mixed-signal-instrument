@@ -1,6 +1,7 @@
 #include "awg.h"
 
 #include "awg_refill.h"
+#include "tasks.h"
 
 #include "dac.h"
 #include "tim.h"
@@ -22,6 +23,10 @@ static volatile awg_state_t state;
 static volatile uint32_t underruns;
 static volatile uint32_t dma_errors;
 static volatile uint32_t refill_misses;
+/* Debugger-readable timing, reset on Start. Cycles include task scheduling and rendering. */
+static volatile uint32_t refill_max_cycles;
+static volatile uint32_t refill_count;
+static uint32_t refill_started[2];
 
 static uint32_t dac_channel(uint8_t channel)
 {
@@ -180,6 +185,10 @@ awg_result_t awg_start(void)
     __HAL_DBGMCU_FREEZE_TIM6();
 #endif
     awg_refill_reset(&refill, active_mask);
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    refill_max_cycles = 0U;
+    refill_count = 0U;
     __DMB();
     state = AWG_RUNNING;
     if (HAL_TIM_Base_Start(&htim6) != HAL_OK) {
@@ -212,6 +221,12 @@ void awg_process(void)
 
         mask = __get_PRIMASK();
         __disable_irq();
+        __DMB();
+        uint32_t elapsed = DWT->CYCCNT - refill_started[half];
+        if (elapsed > refill_max_cycles) {
+            refill_max_cycles = elapsed;
+        }
+        ++refill_count;
         awg_refill_finish(&refill, half);
         __set_PRIMASK(mask);
     }
@@ -223,10 +238,20 @@ static void dma_complete(uint8_t channel, uint8_t half)
     if (state != AWG_RUNNING || (active_mask & bit) == 0U) {
         return;
     }
-    if (awg_refill_complete(&refill, channel, half) == AWG_REFILL_MISSED) {
+    if (refill.completed[half] == 0U) {
+        refill_started[half] = DWT->CYCCNT;
+    }
+    switch (awg_refill_complete(&refill, channel, half)) {
+    case AWG_REFILL_READY:
+        tasks_notify_awg();
+        break;
+    case AWG_REFILL_MISSED:
         ++refill_misses;
         CLEAR_BIT(TIM6->CR1, TIM_CR1_CEN);
         state = AWG_FAULT;
+        break;
+    case AWG_REFILL_WAITING:
+        break;
     }
 }
 

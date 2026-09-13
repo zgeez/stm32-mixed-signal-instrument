@@ -1,5 +1,9 @@
 #include "logic.h"
 
+#include "FreeRTOS.h"
+#include "ownership.h"
+#include "task.h"
+#include "tasks.h"
 #include "main.h"
 #include "tim.h"
 #include <string.h>
@@ -21,6 +25,21 @@ static logic_status_t status = {
 static volatile bool dma_complete;
 static volatile bool dma_failed;
 static volatile bool dma_overrun;
+
+static bool claim_hardware(void)
+{
+    taskENTER_CRITICAL();
+    bool granted = ownership_claim(&acquisition_ownership, ACQUISITION_LOGIC);
+    taskEXIT_CRITICAL();
+    return granted;
+}
+
+static void release_hardware(void)
+{
+    taskENTER_CRITICAL();
+    ownership_release(&acquisition_ownership, ACQUISITION_LOGIC);
+    taskEXIT_CRITICAL();
+}
 
 static bool valid_rate(uint32_t rate)
 {
@@ -45,6 +64,7 @@ static void complete_callback(DMA_HandleTypeDef *hdma)
     (void)hdma;
     HAL_TIM_Base_Stop(&htim1);
     dma_complete = true;
+    tasks_notify_acquire();
 }
 
 static void error_callback(DMA_HandleTypeDef *hdma)
@@ -57,6 +77,7 @@ static void error_callback(DMA_HandleTypeDef *hdma)
     if ((hdma->ErrorCode & HAL_DMA_ERROR_TE) != 0U) {
         dma_failed = true;
     }
+    tasks_notify_acquire();
 }
 
 static void stop_hardware(void)
@@ -114,7 +135,11 @@ logic_result_t logic_arm(void)
     if (status.state == LOGIC_ARMED) {
         return LOGIC_BUSY;
     }
+    if (!claim_hardware()) {
+        return LOGIC_BUSY;
+    }
     if (!start_hardware()) {
+        release_hardware();
         ++status.dma_errors;
         status.state = LOGIC_FAULT;
         return LOGIC_HW_ERROR;
@@ -128,6 +153,7 @@ logic_result_t logic_stop(void)
     if (status.state == LOGIC_ARMED) {
         stop_hardware();
     }
+    release_hardware();
     status.state = LOGIC_IDLE;
     return LOGIC_OK;
 }
@@ -157,6 +183,7 @@ void logic_process(void)
         status.overruns += dma_overrun;
         status.dma_errors += dma_failed;
         status.state = LOGIC_FAULT;
+        release_hardware();
         return;
     }
     if (!dma_complete) {
@@ -178,6 +205,7 @@ void logic_process(void)
         if (!start_hardware()) {
             ++status.dma_errors;
             status.state = LOGIC_FAULT;
+            release_hardware();
         }
         return;
     }

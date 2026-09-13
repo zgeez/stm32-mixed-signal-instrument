@@ -15,108 +15,90 @@ outside `Core/`; integration remains in generated USER CODE regions.
 | ADC1/2 | PC4/PC5, regular simultaneous IN14/15; 21 MHz ADC clock |
 | TIM2 | 84 MHz timer clock; TRGO at 100, 500 or 1000 kS/s |
 | TIM1 | 168 MHz timer clock; update event requests each logic sample |
+| TIM3 | 84 MHz timer clock; PWM reference output on PC6, 1 Hz to 42 MHz |
 | Logic 0..7 | PE7..PE14, GPIOE inputs with pull-downs so unconnected channels read low |
 | DMA | DAC1: DMA1 S5 C7; DAC2: DMA1 S6 C7; ADC pair: DMA2 S0 C0; logic: DMA2 S5 C6 |
 | Board control | PD4 low holds audio codec in reset; PE3 high deselects motion sensor; PC0 high disables USB host power switch |
-| Debug | PA13/PA14 SWD; SysTick HAL timebase |
+| Debug | PA13/PA14 SWD; SysTick kernel tick, TIM7 HAL timebase |
 | Status LED | Green LD4 on PD12; off when idle, slow blink while active, fast blink on fault |
 | USB device | OTG_FS CDC, CN5; PA9 VBUS, PA11 DM, PA12 DP; 48 MHz PLLQ, IRQ priority 6 |
 
-## AWG
+## Signal paths
 
-Boot starts a 1 kHz sine on PA4. TIM6 supplies a fixed 400 kS/s trigger; each output
-uses a 32-bit phase accumulator with 1 mHz configuration units. Sine, triangle, square,
-sawtooth, DC and 2..256-sample arbitrary tables share the same 1 Hz to 20 kHz path.
+| Function | Data path | Buffer / limits |
+| --- | --- | --- |
+| AWG | TIM6 -> DAC1/2, circular DMA, 32-bit DDS | 1024 samples/channel; 512-sample halves; 1.28 ms refill deadline |
+| Scope | TIM2 -> simultaneous ADC1/2 -> packed 32-bit DMA pairs | 64..2048 pairs; raw buffer is twice capture length |
+| Logic | TIM1 -> DMA read of GPIOE IDR -> D0..D7 | 64..4096 samples; raw buffer is twice capture length |
+| Reference | TIM3 PWM -> PC6 | 1 Hz..42 MHz requested; status reports programmed rate |
 
-Each channel owns a 1024-sample circular DMA buffer. Half-transfer and completion
-interrupts release the inactive half only after every active DMA stream has crossed the
-boundary. The foreground loop refills it; reuse before completion increments the refill
-miss counter and stops TIM6. The 512-sample half gives a 1.28 ms refill deadline.
+AWG supports sine, triangle, square, sawtooth, DC and 2..256-entry arbitrary tables
+at 1 Hz..20 kHz. Boot starts a 1 kHz sine on PA4. Amplitude is peak-to-peak and
+offset is the center, both relative to DAC full scale; out-of-range combinations
+are rejected. Arbitrary scaling is cached while stopped.
 
-Amplitude is peak-to-peak and offset is the center, normalized to DAC full scale. Invalid
-combinations that exceed codes 0..4095 are rejected. Both channels start from their
-configured phase on the same timer. PA4's audio connection can load DAC1; PA5 also drives
-the deselected motion sensor's clock trace. Analog accuracy remains unmeasured.
+Both DMA streams must release a half before refill. Each callback faults and stops
+TIM6 if the opposite half is unfinished. IRQ latency can allow stale samples before
+shutdown. Cycle counters measure callback-to-refill latency and reset on Start.
+PA4's audio connection can load DAC1; PA5 shares the deselected sensor's clock trace.
 
-## Oscilloscope
+Scope and logic stop sampling before USB transfer. Missing triggers rearm and count
+separately from DMA faults. Scope supports free-run and edge triggers; logic also
+supports masked-pattern entry. Live scope view appends finite captures on a
+cumulative captured-time axis, excluding transfer gaps.
 
-ADC1 and ADC2 sample PC4 and PC5 together from TIM2. DMA stores the combined ADC
-data register as packed 32-bit pairs. A raw block twice the requested capture length
-allows the foreground trigger search to keep the requested pre-trigger history. The
-DMA completion callback stops TIM2 before the circular stream can overwrite the block.
-Captures contain 64..2048 pairs and stop before USB transfer.
+Logic rates are 1, 2, 4.941 and 9.882 MS/s for requests of 1, 2, 5 and 10 MS/s.
+GPIO reads occur when DMA gets bus access, not exactly at the timer edge. Pulses
+can be missed without an error flag; asynchronous pulse limits remain uncharacterized.
+The 10 MS/s setting is experimental.
 
-Free-run, rising and falling triggers are supported on either channel. Missing edges
-rearm acquisition and have a separate counter from ADC overruns and DMA errors. The
-desktop application reads completed captures in 12-pair packets, plots both channels
-against the trigger time and calculates basic voltage and timing measurements. Live
-view repeats this finite capture and transfer cycle, with refresh rate set by capture
-length and USB transfer time. The plot appends each capture to a scrolling captured-time
-axis while retaining a bounded history.
+The ADC runs at 21 MHz: 15 conversion cycles give a calculated 1.4 MS/s ceiling.
+Source settling may require lower rates. Analog accuracy remains uncharacterized.
 
-## Logic analyzer
+## Tasks and ownership
 
-TIM1 update events drive DMA2 Stream 5 Channel 6, which reads `GPIOE->IDR` as a
-half-word into a raw block twice the requested capture length. Channels D0..D7 are
-`(sample >> 7) & 0xff`, extracted only for the window that the trigger search keeps.
-DMA2 can reach AHB1 GPIO; DMA1 cannot. Captures contain 64..4096 samples and stop
-before USB transfer.
+FreeRTOS 10 / CMSIS-RTOS v2 is vendored from CubeF4 under
+`Middlewares/Third_Party/`. CubeMX owns peripherals; SysTick serves the kernel,
+TIM7 the HAL.
 
-The timer divides 168 MHz by an integer, so 1 and 2 MS/s are exact while 5 and
-10 MS/s round to 4.941 and 9.882 MS/s. Status reports the requested and the programmed
-rate rather than presenting the request as achieved. 10 MS/s remains an experiment.
-
-Triggers are free-run, a rising or falling edge on one channel, or a masked pattern
-that fires when the port enters the pattern rather than while it is held. Missing
-triggers rearm acquisition and count separately from errors.
-
-GPIO has no sample FIFO, and a DMA read observes the pins when its bus transaction is
-serviced rather than at the timer edge. The DMA FIFO and direct-mode error flags are
-the only missed-transfer indicators available; they are counted as overruns, but their
-absence does not prove that every requested sampling instant was captured. A pulse
-shorter than one sample interval can be missed entirely. Minimum reliable pulse width
-and timing variation remain unmeasured.
-
-The desktop application reads completed captures in 48-sample packets, draws eight
-square traces against the trigger time, reports per-channel transitions, duty, shortest
-high and low runs, frequency and edge-interval jitter, and decodes UART, SPI and I2C
-from the captured channels. Decoding is a host function over the sample array, so it
-depends on the capture rate rather than on firmware support.
-
-## Analog acquisition limits
-
-ADC /4 gives 21 MHz; /2 exceeds the 36 MHz limit. The minimum 15 conversion cycles
-give a calculated 1.4 MS/s ceiling. Source settling may require slower sampling.
-
-## Memory and throughput
-
-| Region | Base | Size | Use |
+| Task | Priority | Work | Wakeup |
 | --- | --- | --- | --- |
-| SRAM1 | 0x20000000 | 112 KiB | DMA buffers and shared state |
-| SRAM2 | 0x2001C000 | 16 KiB | DMA buffers and shared state |
-| CCM | 0x10000000 | 64 KiB | CPU-only data; inaccessible to DMA |
+| awg | High | DAC buffer refill | DMA half/full completion |
+| acquire | AboveNormal | Scope/logic trigger search and capture processing | DMA completion/error |
+| control | Normal | USB framing and commands | CDC RX/TX completion |
+| status | Low | LD4 | Every 50 ms |
 
-DMA buffers share 128 KiB with globals, stack and heap. Scope capture storage uses
-24 KiB at its maximum length and logic capture storage uses 20 KiB. CCM is CPU-only.
+ISRs notify tasks; they do not render samples or parse commands. RTOS-aware
+peripheral IRQs use priorities 5 or 6, with the syscall threshold at 5.
+Hardware timers set sampling rates independently of task scheduling.
 
-Two ADC channels at 1 MS/s in 16-bit containers produce 4 MB/s, and eight logic
-channels sampled at 5 MS/s into half-words produce 10 MB/s. USB Full Speed is limited
-to 1.5 MB/s before overhead, so high-rate acquisition needs finite captures.
+The acquisition arbiter permits scope or logic, never both. Arm claims ownership;
+Stop or fault releases it. Complete retains ownership for reading/rearming.
+Conflicting requests return busy and increment the refusal count.
 
-## Software boundaries
+## Memory and transport
 
-`App/control` parses commands in the foreground. CDC receives one 64-byte packet
-at a time and defers rearming until consumption. TX storage remains owned by USB
-until completion. Reset/deconfiguration clears session data; the AWG keeps running.
-The LED uses a nonblocking tick check. FreeRTOS is deferred until integration.
+| Memory | Size | Use |
+| --- | --- | --- |
+| SRAM1, 0x20000000 | 112 KiB | DMA buffers, globals, stacks and heap |
+| SRAM2, 0x2001C000 | 16 KiB | Same DMA-accessible pool |
+| CCM, 0x10000000 | 64 KiB | CPU only; DMA cannot access it |
 
-The CLI and PySide6 application call the same instrument model over a framed serial
-transport. Serial requests and capture transfer run on one Qt worker thread so they
-cannot block the interface. Capture analysis and protocol decoding stay on the host,
-in `desktop/src/stm32_msi/scope.py` and `logic.py`. Scope display scaling stays in the UI: time/div sets a
-ten-division window, volts/div sets an eight-division window, and manual pan or zoom
-pauses live following. The [protocol](../../protocol/README.md) defines commands and
-errors.
+Maximum capture storage: scope 24 KiB, logic 20 KiB. The FreeRTOS heap is 16 KiB.
+Dual ADC at 1 MS/s produces 4 MB/s, exceeding USB Full Speed's 1.5 MB/s raw limit;
+high-rate acquisition therefore uses finite captures.
+
+CDC consumes one 64-byte packet before rearming RX and retains TX buffers until
+completion. USB reset clears session data; AWG output continues.
+See the [protocol](../../protocol/README.md) for layouts and error handling.
+
+## Desktop
+
+UI -> instrument model -> protocol -> serial transport. A Qt worker handles USB;
+the host computes measurements and UART/SPI/I2C decoding. Scope navigation uses
+ten horizontal and eight vertical divisions; horizontal pan/zoom pauses live following.
+
+Measured performance and remaining limits are in [validation](../validation.md).
 
 ## References
 

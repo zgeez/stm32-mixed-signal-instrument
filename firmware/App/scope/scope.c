@@ -1,5 +1,9 @@
 #include "scope.h"
 
+#include "FreeRTOS.h"
+#include "ownership.h"
+#include "task.h"
+#include "tasks.h"
 #include "adc.h"
 #include "tim.h"
 #include <string.h>
@@ -20,6 +24,21 @@ static scope_status_t status = {
 static volatile bool dma_complete;
 static volatile bool dma_failed;
 static volatile bool adc_overrun;
+
+static bool claim_hardware(void)
+{
+    taskENTER_CRITICAL();
+    bool granted = ownership_claim(&acquisition_ownership, ACQUISITION_SCOPE);
+    taskEXIT_CRITICAL();
+    return granted;
+}
+
+static void release_hardware(void)
+{
+    taskENTER_CRITICAL();
+    ownership_release(&acquisition_ownership, ACQUISITION_SCOPE);
+    taskEXIT_CRITICAL();
+}
 
 static bool valid_rate(uint32_t rate)
 {
@@ -76,7 +95,11 @@ scope_result_t scope_arm(void)
     if (status.state == SCOPE_ARMED) {
         return SCOPE_BUSY;
     }
+    if (!claim_hardware()) {
+        return SCOPE_BUSY;
+    }
     if (!start_hardware()) {
+        release_hardware();
         ++status.dma_errors;
         status.state = SCOPE_FAULT;
         return SCOPE_HW_ERROR;
@@ -90,6 +113,7 @@ scope_result_t scope_stop(void)
     if (status.state == SCOPE_ARMED) {
         stop_hardware();
     }
+    release_hardware();
     status.state = SCOPE_IDLE;
     return SCOPE_OK;
 }
@@ -119,6 +143,7 @@ void scope_process(void)
         status.overruns += adc_overrun;
         status.dma_errors += dma_failed;
         status.state = SCOPE_FAULT;
+        release_hardware();
         return;
     }
     if (!dma_complete) {
@@ -142,6 +167,7 @@ void scope_process(void)
         if (!start_hardware()) {
             ++status.dma_errors;
             status.state = SCOPE_FAULT;
+            release_hardware();
         }
         return;
     }
@@ -156,6 +182,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
     if (hadc->Instance == ADC1) {
         HAL_TIM_Base_Stop(&htim2);
         dma_complete = true;
+        tasks_notify_acquire();
     }
 }
 
@@ -168,5 +195,6 @@ void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
         if ((hadc->ErrorCode & HAL_ADC_ERROR_DMA) != 0U) {
             dma_failed = true;
         }
+        tasks_notify_acquire();
     }
 }

@@ -7,8 +7,21 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from stm32_msi.gui import MainWindow, Port, format_duration, parse_sample_table
-from stm32_msi.instrument import Capture, LogicCapture, LogicStatus, ScopeStatus, Status
+from stm32_msi.gui import (
+    MainWindow,
+    Port,
+    format_duration,
+    format_per_division,
+    parse_sample_table,
+)
+from stm32_msi.instrument import (
+    Capture,
+    DeviceStatus,
+    LogicCapture,
+    LogicStatus,
+    ScopeStatus,
+    Status,
+)
 
 
 class FakeSession(QObject):
@@ -18,6 +31,7 @@ class FakeSession(QObject):
     capture_ready = Signal(object)
     logic_status_changed = Signal(object)
     logic_capture_ready = Signal(object)
+    device_status_changed = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -453,3 +467,145 @@ def test_durations_are_formatted_by_magnitude():
     assert format_duration(500e-9) == "500 ns"
     assert format_duration(12.5e-6) == "12.500 us"
     assert format_duration(4e-3) == "4.000 ms"
+
+
+def device_status(owner=0, conflicts=0, awg_state=1, scope_state=0, logic_state=0, **counts):
+    return DeviceStatus(
+        owner,
+        conflicts,
+        awg_state,
+        counts.get("underruns", 0),
+        counts.get("awg_dma_errors", 0),
+        counts.get("refill_misses", 0),
+        scope_state,
+        counts.get("scope_capture_id", 0),
+        counts.get("scope_trigger_misses", 0),
+        counts.get("scope_overruns", 0),
+        counts.get("scope_dma_errors", 0),
+        logic_state,
+        counts.get("logic_capture_id", 0),
+        counts.get("logic_trigger_misses", 0),
+        counts.get("logic_overruns", 0),
+        counts.get("logic_dma_errors", 0),
+    )
+
+
+def test_one_snapshot_drives_every_panel(window, app):
+    view, session = window
+    connect(view, session, app)
+    session.device_status_changed.emit(
+        device_status(awg_state=2, underruns=3, refill_misses=4, scope_state=1)
+    )
+    app.processEvents()
+    assert view.state_label.text() == "Running"
+    assert view.underrun_label.text() == "3"
+    assert view.refill_miss_label.text() == "4"
+    assert view.acquisition_label.text() == "Free"
+    # The scope panel learns it is armed from the same snapshot.
+    assert view.scope.scope_state.text() == "Armed"
+
+
+def test_acquisition_owner_blocks_the_other_panel(window, app):
+    view, session = window
+    connect(view, session, app)
+
+    session.device_status_changed.emit(device_status(owner=2, logic_state=1))
+    app.processEvents()
+    assert "Logic" in view.acquisition_label.text()
+    # Logic holds the hardware, so Arm is refused up front rather than by the device.
+    assert not view.scope.arm.isEnabled()
+    assert not view.scope.run.isEnabled()
+
+    session.device_status_changed.emit(device_status(owner=1, scope_state=1))
+    app.processEvents()
+    assert not view.logic.arm.isEnabled()
+
+    session.device_status_changed.emit(device_status())
+    app.processEvents()
+    assert view.acquisition_label.text() == "Free"
+    assert view.scope.arm.isEnabled()
+    assert view.logic.arm.isEnabled()
+
+
+def test_refused_claims_are_surfaced(window, app):
+    view, session = window
+    connect(view, session, app)
+    session.device_status_changed.emit(device_status(owner=2, conflicts=5, logic_state=1))
+    app.processEvents()
+    assert "5 refused" in view.acquisition_label.text()
+
+
+def test_polling_uses_the_unified_snapshot(window, app):
+    view, session = window
+    connect(view, session, app)
+    session.calls.clear()
+    view._poll()
+    assert session.calls == [("refresh",)]
+    # A snapshot clears the in-flight flag so the next tick can poll again.
+    session.device_status_changed.emit(device_status())
+    app.processEvents()
+    view._poll()
+    assert session.calls == [("refresh",), ("refresh",)]
+
+
+def test_manual_zoom_names_the_division_instead_of_custom(window, app):
+    view, session = window
+    panel = view.scope
+    complete = ScopeStatus(2, 1_000_000, 512, 256, 7, 0, 0, 0)
+    panel.apply_capture(Capture(complete, tuple(range(512)), tuple(range(512))))
+
+    panel.plot.setXRange(-0.25, 0.25, padding=0)
+    panel.plot.setYRange(0.0, 1.6, padding=0)
+    panel._view_changed_manually((True, True))
+    # 0.5 ms across ten divisions, 1.6 V across eight.
+    assert panel.time_scale.currentText() == "50 us/div"
+    assert panel.voltage_scale.currentText() == "200 mV/div"
+    assert panel.time_scale.currentData() == "custom"
+
+    # Choosing a preset again must not leave the stale number in the list.
+    panel.time_scale.setCurrentIndex(panel.time_scale.findData(1.0))
+    panel.voltage_scale.setCurrentIndex(panel.voltage_scale.findData(0.5))
+    assert panel.time_scale.itemText(panel.time_scale.count() - 1) == "Custom"
+    assert panel.voltage_scale.itemText(panel.voltage_scale.count() - 1) == "Custom"
+
+
+def test_division_labels_pick_a_readable_magnitude():
+    assert format_per_division(0.0005, "ms") == "500 ns/div"
+    assert format_per_division(0.05, "ms") == "50 us/div"
+    assert format_per_division(2.5, "ms") == "2.5 ms/div"
+    assert format_per_division(2000.0, "ms") == "2 s/div"
+    assert format_per_division(0.2, "V") == "200 mV/div"
+    assert format_per_division(1.5, "V") == "1.5 V/div"
+
+
+def test_hiding_a_channel_drops_it_from_the_plot_and_measurements(window, app):
+    view, session = window
+    panel = view.scope
+    complete = ScopeStatus(2, 1_000_000, 4, 2, 7, 0, 0, 0)
+    panel.apply_capture(Capture(complete, (0, 1024, 2048, 4095), (4095, 2048, 1024, 0)))
+    assert panel.measurements[0][0].text() != "\u2014"
+    assert panel.measurements[1][0].text() != "\u2014"
+
+    panel.show_channel[1].setChecked(False)
+    app.processEvents()
+    assert panel.channel_1_curve.isVisible()
+    assert not panel.channel_2_curve.isVisible()
+    # CH2 is not measured while hidden, and says so.
+    assert panel.measurements[1][0].text() == "\u2014"
+    assert panel.measurements[0][0].text() != "\u2014"
+
+    panel.show_channel[1].setChecked(True)
+    app.processEvents()
+    assert panel.channel_2_curve.isVisible()
+    assert panel.measurements[1][0].text() != "\u2014"
+
+
+def test_hiding_a_channel_before_any_capture_is_safe(app):
+    session = FakeSession()
+    view = MainWindow(session, lambda: [Port("COM4", "instrument", True)])
+    try:
+        view.scope.show_channel[0].setChecked(False)
+        app.processEvents()
+        assert not view.scope.channel_1_curve.isVisible()
+    finally:
+        view.close()

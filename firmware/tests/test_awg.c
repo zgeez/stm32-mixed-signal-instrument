@@ -123,12 +123,39 @@ static int test_arbitrary(void)
     return 0;
 }
 
+static int test_arbitrary_refill(void)
+{
+    uint16_t table[256], samples[AWG_DMA_HALF_SAMPLES];
+    for (unsigned i = 0U; i < 256U; ++i) {
+        table[i] = (uint16_t)((i * 997U) & 4095U);
+    }
+    const uint16_t lengths[] = {2U, 3U, 17U, 255U, 256U};
+    for (unsigned n = 0U; n < sizeof(lengths) / sizeof(lengths[0]); ++n) {
+        awg_config_t settings = config(AWG_ARBITRARY);
+        settings.frequency_millihz = 19999125U;
+        settings.phase_decidegrees = 3599U;
+        settings.amplitude_permille = (uint16_t)(n * 250U);
+        awg_generator_t rendered, reference;
+        CHECK(awg_generator_init(&rendered, &settings, table, lengths[n]));
+        CHECK(awg_generator_init(&reference, &settings, table, lengths[n]));
+        for (unsigned block = 0U; block < 8U; ++block) {
+            awg_generator_render(&rendered, samples, AWG_DMA_HALF_SAMPLES);
+            for (unsigned i = 0U; i < AWG_DMA_HALF_SAMPLES; ++i) {
+                CHECK(samples[i] == awg_generator_next(&reference));
+            }
+            CHECK(rendered.phase == reference.phase);
+        }
+    }
+    return 0;
+}
+
 int main(void)
 {
     CHECK(test_frequency() == 0);
     CHECK(test_shapes() == 0);
     CHECK(test_scaling_and_phase() == 0);
     CHECK(test_arbitrary() == 0);
+    CHECK(test_arbitrary_refill() == 0);
     puts("DDS frequency, waveforms, scaling, phase and arbitrary playback passed.");
     return 0;
 }

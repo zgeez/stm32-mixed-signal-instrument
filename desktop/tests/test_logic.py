@@ -214,3 +214,34 @@ def test_decoders_return_nothing_for_an_idle_capture():
     assert decode_uart(idle, 0, 1_000_000, 62_500) == []
     assert decode_spi(idle, SCL, SDA) == []
     assert decode_i2c(np.zeros(256, dtype=np.uint8), SCL, SDA) == []
+
+
+def idle_separated(values, span, idle_bits=4, channel=0):
+    """Frames with a real inter-frame gap, as a line at rest actually looks."""
+    bits = [1] * (idle_bits * span)
+    for value in values:
+        for bit in [0] + [(value >> index) & 1 for index in range(8)] + [1]:
+            bits += [bit] * span
+        bits += [1] * (idle_bits * span)
+    return [bit << channel for bit in bits]
+
+
+@pytest.mark.parametrize("skip_bits", (1, 2, 3, 5, 7, 9))
+def test_uart_resyncs_when_the_capture_starts_mid_frame(skip_bits):
+    # A capture almost never begins on a frame boundary, so the first falling edge is
+    # often a mid-byte transition. Skipping a whole frame on the resulting framing
+    # error locks a repeating stream into the wrong phase for good; resuming from the
+    # presumed start bit lets it recover.
+    span = 16
+    stream = idle_separated([0x41] * 6, span)
+    offset = (4 + skip_bits) * span
+    symbols = decode_uart(stream[offset:], 0, 1_000_000, 62_500)
+    clean = [s.value for s in symbols if s.error is None]
+    assert 0x41 in clean, f"never recovered; decoded {sorted(set(clean))}"
+
+
+def test_uart_decodes_every_frame_once_aligned():
+    span = 16
+    stream = idle_separated([0x41, 0x55, 0x7E, 0x00, 0xFF], span)
+    values = [s.value for s in decode_uart(stream, 0, 1_000_000, 62_500) if s.error is None]
+    assert values == [0x41, 0x55, 0x7E, 0x00, 0xFF]

@@ -75,6 +75,28 @@ class TransportStub:
                 0,
                 0,
             )
+        if command == Command.DEVICE_STATUS:
+            # Arming logic takes the acquisition hardware; stopping hands it back.
+            owner = 2 if self.logic_state else 0
+            return struct.pack(
+                "<BIBIIIBIIIIBIIII",
+                owner,
+                0,
+                self.state,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                self.logic_state,
+                0,
+                0,
+                0,
+                0,
+            )
         return b""
 
     def close(self):
@@ -86,16 +108,24 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
-def wait_for(signal, action):
+def wait_for(signal, action, match=None):
+    """Wait for an emission, optionally one that satisfies ``match``.
+
+    Every command reports several subsystems, so emissions from the previous command
+    can still be in flight. Waiting for the first arrival would sometimes read that
+    stale one; matching on the expected condition ignores it.
+    """
     result = []
     loop = QEventLoop()
 
     def receive(*args):
+        if match is not None and not match(*args):
+            return
         result.append(args)
         loop.quit()
 
     signal.connect(receive)
-    QTimer.singleShot(1000, loop.quit)
+    QTimer.singleShot(2000, loop.quit)
     action()
     loop.exec()
     signal.disconnect(receive)
@@ -144,15 +174,26 @@ def test_session_runs_connection_and_commands_on_worker_thread(app):
         assert status.waveform == 3
         assert status.requested_hz == pytest.approx(123.456)
 
-        # Every command also reports scope and logic state, so drain those first.
-        app.processEvents()
         (logic,) = wait_for(
             session.logic_status_changed,
             lambda: session.arm_logic(LogicConfig(sample_rate=2_000_000)),
+            match=lambda status: status.state == 1,
         )
-        assert logic.state == 1
         assert logic.sample_rate == 2_000_000
-        (logic,) = wait_for(session.logic_status_changed, session.stop_logic)
-        assert logic.state == 0
+
+        # The unified snapshot must agree with the per-subsystem read.
+        (device,) = wait_for(
+            session.device_status_changed,
+            session.refresh,
+            match=lambda status: status.logic_state == 1,
+        )
+        assert device.owner_name == "logic"
+
+        (logic,) = wait_for(
+            session.logic_status_changed,
+            session.stop_logic,
+            match=lambda status: status.state == 0,
+        )
+        assert logic.sample_rate == 2_000_000
     finally:
         session.shutdown()

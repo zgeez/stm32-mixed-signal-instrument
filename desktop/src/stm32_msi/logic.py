@@ -134,7 +134,11 @@ def decode_uart(
             error = "framing"
         text = f"0x{value:02X}" if error is None else f"0x{value:02X} {error}"
         symbols.append(Symbol(start, end, text, value, error))
-        at = end - 1
+        # A capture almost never begins on a frame boundary, so the first falling edge
+        # is often mid-byte. A bad stop bit means this was not a start bit after all;
+        # resume scanning just past it instead of skipping a whole frame, or the wrong
+        # lock repeats forever on a periodic stream.
+        at = end - 1 if error != "framing" else start
     return symbols
 
 

@@ -17,5 +17,23 @@ target_sources(firmware PRIVATE
     App/awg/awg.c App/awg/awg_waveform.c App/awg/awg_refill.c
     App/control/protocol.c App/control/commands.c App/control/usb_control.c
     App/scope/scope.c App/scope/scope_trigger.c
-    App/logic/logic.c App/logic/logic_trigger.c)
-target_include_directories(firmware PRIVATE App/awg App/control App/scope App/logic)
+    App/logic/logic.c App/logic/logic_trigger.c
+    App/control/ownership.c App/rtos/tasks.c
+    App/probe/probe.c App/probe/probe_divider.c)
+target_include_directories(firmware PRIVATE
+    App/awg App/control App/scope App/logic App/rtos App/probe)
+
+# FreeRTOS is vendored from STM32Cube FW_F4 V1.28.3 because the CubeMX X-CUBE-FREERTOS
+# pack is not installed, so it is listed here rather than in the generated CMake.
+set(FREERTOS_DIR Middlewares/Third_Party/FreeRTOS/Source)
+target_sources(firmware PRIVATE
+    ${FREERTOS_DIR}/croutine.c ${FREERTOS_DIR}/event_groups.c ${FREERTOS_DIR}/list.c
+    ${FREERTOS_DIR}/queue.c ${FREERTOS_DIR}/stream_buffer.c ${FREERTOS_DIR}/tasks.c
+    ${FREERTOS_DIR}/timers.c
+    ${FREERTOS_DIR}/portable/GCC/ARM_CM4F/port.c
+    ${FREERTOS_DIR}/portable/MemMang/heap_4.c
+    ${FREERTOS_DIR}/CMSIS_RTOS_V2/cmsis_os2.c)
+target_include_directories(firmware PRIVATE
+    ${FREERTOS_DIR}/include
+    ${FREERTOS_DIR}/portable/GCC/ARM_CM4F
+    ${FREERTOS_DIR}/CMSIS_RTOS_V2)

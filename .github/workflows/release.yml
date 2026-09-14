@@ -1,0 +1,142 @@
+name: Release
+
+# Cut a release by pushing a tag such as v0.1.0. workflow_dispatch builds the same
+# artifacts without publishing, so the whole thing can be rehearsed on a branch rather
+# than by pushing a tag that would then have to be deleted.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Tag, package and firmware agree
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # The firmware carries its version as C macros and the package carries it in
+      # pyproject.toml. A tag that means two different numbers is worth failing on here,
+      # before any of it is built, rather than discovering it in a published release.
+      - id: check
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          header = Path("firmware/App/control/version.h").read_text(encoding="utf-8")
+          parts = [
+              int(re.search(rf"FIRMWARE_VERSION_{field}\s+(\d+)U", header).group(1))
+              for field in ("MAJOR", "MINOR", "PATCH")
+          ]
+          firmware = ".".join(str(part) for part in parts)
+          with open("desktop/pyproject.toml", "rb") as handle:
+              package = tomllib.load(handle)["project"]["version"]
+          if firmware != package:
+              raise SystemExit(f"firmware says {firmware}, package says {package}")
+
+          ref = os.environ.get("GITHUB_REF", "")
+          if ref.startswith("refs/tags/"):
+              tag = ref.removeprefix("refs/tags/")
+              if tag.lstrip("v") != package:
+                  raise SystemExit(f"tag {tag} does not name version {package}")
+          print(f"version={package}")
+          PY
+
+  linux:
+    name: Firmware, wheel and sdist
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi ninja-build
+      - run: cmake --preset Release && cmake --build --preset Release
+        working-directory: firmware
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install "build>=1,<2"
+      - run: python scripts/build_release.py --skip-application
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/firmware/*.elf
+
+  windows:
+    name: Frozen application
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # PyInstaller freezes for the platform it runs on, so this job cannot move to Linux
+      # however convenient that would be.
+      - run: python -m pip install "./desktop[release]"
+      - run: python scripts/build_release.py --skip-wheel --skip-firmware
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*-windows.zip
+
+  publish:
+    name: Publish the release
+    needs: [version, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+      - run: find assets -type f | sort
+      - name: Write the notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cat > notes.md <<EOF
+          Desktop application and firmware for the STM32F407G-DISC1 mixed-signal instrument.
+
+          **With Python installed:** \`pip install stm32_msi_desktop-${VERSION}-py3-none-any.whl\`
+          then run \`stm32-msi-gui\`.
+
+          **Without Python:** download \`stm32-msi-${VERSION}-windows.zip\`, unpack it, and run
+          the executable inside. It carries its own interpreter.
+
+          **Flash the board** over ST-LINK, which also confirms it came back up:
+
+          \`\`\`
+          python scripts/flash.py --port COM4 --image stm32-msi-${VERSION}.elf
+          \`\`\`
+
+          The application warns, without refusing to connect, if the firmware on the board is
+          older than it expects. Measured limits and error budgets are in
+          \`docs/characterization.md\`; what has and has not been verified is in
+          \`docs/validation.md\`.
+          EOF
+          cat notes.md
+      # Only a tag publishes. A manual run stops here, having proved the artifacts build.
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t files < <(find assets -type f \( -name '*.whl' -o -name '*.tar.gz' \
+            -o -name '*.elf' -o -name '*.zip' \) | sort)
+          test ${#files[@]} -ge 4 || { echo "expected at least four assets"; exit 1; }
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "STM32 Mixed-Signal Instrument ${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            "${files[@]}"

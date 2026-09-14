@@ -39,6 +39,9 @@ Debug firmware unless a record states otherwise.
 | V-22 | Capture window integrity | Pass after fixes |
 | V-23 | Task stack and heap headroom | Pass |
 | V-24 | Early bring-up | Pass |
+| V-25 | Packaging and clean install | Pass |
+| V-26 | Firmware installation and verification | Pass |
+| V-27 | Version compatibility and upgrade | Pass |
 
 Open defects are listed in section 4, uncharacterized areas in section 5.
 
@@ -396,6 +399,70 @@ loopback channels showed zero-sample lag and 0.999997 correlation. Live scope co
 
 **Verdict.** Pass.
 
+### V-25 Packaging and clean install
+
+**Method.** `scripts/build_release.py` builds a wheel, an sdist and a frozen Windows
+application, and stages the firmware image beside them. The wheel was then installed into an
+empty virtual environment that shared nothing with the development one.
+
+**Result.** Wheel 36 KiB, sdist 51 KiB, application folder 160 MB and 66 MB zipped. The fresh environment
+resolved numpy 2.5.3, pyqtgraph 0.14.0, pyserial 3.5 and PySide6 6.11.2 from the declared
+ranges, created both console entry points, and the CLI returned device status from the board.
+The frozen application launched and stayed running.
+
+The first frozen build failed on launch: PyInstaller was pointed at `gui.py`, which runs it
+as `__main__` with no package, so its relative imports raised ImportError. It now freezes a
+launcher that imports the installed package instead.
+
+A release is assembled by `.github/workflows/release.yml` on a `v*` tag: firmware, wheel and
+sdist on Linux, the frozen application on Windows because PyInstaller freezes for the platform
+it runs on, then one publish step. It refuses before building anything if the tag, the package
+version and the firmware macros disagree, which was checked by running that step's script
+against both a matching and a mismatched tag. Both split build invocations the jobs use were
+run locally and produce the four assets the publish step expects.
+
+**Verdict.** Pass.
+
+### V-26 Firmware installation and verification
+
+**Method.** `scripts/flash.py` locates STM32CubeProgrammer, writes and verifies the image,
+then reconnects over the CDC port and asks the board what it is.
+
+**Result.** Flash verified and the board answered `0.1.0 (a82d489)`, matching the commit the
+image was built from. The script reports failure if the programmer is missing, the write is
+unverified, the port never answers, or the version is older than the application expects.
+
+A verified download is not evidence that an image runs, which is why the two steps are one
+command. An earlier version of this check looked for the verification line without passing
+`-v`, so it silently reported failure on a good flash.
+
+**Verdict.** Pass.
+
+### V-27 Version compatibility and upgrade
+
+**Method.** Flash the previous image, which predates the version command, connect with the
+current application, then flash the current image and reconnect. Driven through the
+application's own widgets.
+
+**Result.** 9 of 9 checks passed.
+
+| Firmware | Reported | Warning | Usable |
+| --- | --- | --- | --- |
+| Predates the version command | "unknown" | Shown, naming the expected version | Yes, a capture completed |
+| Current | 0.1.0 (a82d489) | None | Yes |
+
+Older firmware answers "unknown command" rather than failing the connection, so the session
+continues and the reason stays on screen. Refusing would strand a student mid-measurement
+over a difference that may not affect what they are doing; silence would leave them guessing
+at a missing control.
+
+The device previously reported only a name and a protocol number, neither of which changes
+between builds. The build identity is injected by CMake from the working tree, which also
+closes the gap recorded in the characterization report, where a measurement could not be
+tied to the image that produced it.
+
+**Verdict.** Pass.
+
 ## 4. Defects
 
 | ID | Description | Severity | Status |
@@ -421,6 +488,9 @@ and a 2048-sample transfer from 3419.7 ms to 39.79 ms. Found by the milestone 9 
 tested and none held; a speculative fix showed no measurable change and was reverted.
 
 **D-3.** MinGW `cc1.exe` exits 127 and compiles nothing, including a bare `int main(void)`.
+The firmware version command was therefore covered by Python tests and board checks only; the
+shared C and Python protocol vectors were not extended, because unverified C is worse than an
+acknowledged gap.
 The failure predates the milestone 8 changes and is independent of them. Milestone 8 adds no
 host-testable C: its only firmware change is in `scope.c`, which requires the HAL and is
 covered by V-22 instead.
@@ -437,6 +507,3 @@ covered by V-22 instead.
 | L-6 | Timing results cover the listed loads, not every waveform or scheduling condition. |
 | L-7 | Skew is measured against the device's own reference output, which shares the sampler's clock. It bounds the two acquisition paths against each other, not against an independent time base. |
 | L-8 | Debugger halts freeze TIM6. Backpressure snapshots briefly halted the CPU, and DAC sequencing used manual timer events, so neither proves uninterrupted analog timing. |
-
-Outstanding work, including the checks that need external equipment, is tracked in the local
-`testing.md`.

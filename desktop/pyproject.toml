@@ -11,6 +11,8 @@ dependencies = ["numpy>=2,<3", "pyqtgraph>=0.13.7,<1", "pyserial>=3.5,<4", "PySi
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+# Only needed to cut a release, so it stays out of the everyday dev install.
+release = ["build>=1,<2", "pyinstaller>=6,<7"]
 
 [project.scripts]
 stm32-msi = "stm32_msi.__main__:main"

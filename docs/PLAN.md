@@ -17,7 +17,9 @@
 Milestones 0 through 7 have passing host checks and recorded board results. Milestone 8
 has host, coordination, shared-clock skew and all-rate capture results. Milestone 9 has a
 repeatable harness and board-only results in [characterization](characterization.md);
-measurements needing an outside reference are scripted but not yet run.
+measurements needing an outside reference are scripted but not yet run. Milestone 10 builds
+a wheel and a self-contained Windows application, flashes and verifies in one step, and
+reports a firmware version so the application can tell when the two disagree.
 Characterization includes Debug/Release refill timing, hardware DMA error
 recovery and USB backpressure. Independent timing, analog accuracy and bandwidth
 measurements remain in milestone 9. See [validation](validation.md).

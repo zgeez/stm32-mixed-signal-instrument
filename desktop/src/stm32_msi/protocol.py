@@ -37,6 +37,7 @@ class Command(IntEnum):
     MIXED_ARM = 25
     MIXED_STOP = 26
     MIXED_STATUS = 27
+    FIRMWARE_VERSION = 28
 
 
 @dataclass(frozen=True)

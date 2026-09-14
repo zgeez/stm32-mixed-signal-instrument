@@ -3,7 +3,7 @@
 import struct
 from dataclasses import dataclass
 
-from .protocol import Command
+from .protocol import VERSION, Command
 from .transport import Transport
 
 WAVEFORMS = {
@@ -17,6 +17,9 @@ WAVEFORMS = {
 MIN_FREQUENCY_MILLIHZ = 1000
 MAX_FREQUENCY_MILLIHZ = 20_000_000
 MAX_ARBITRARY_SAMPLES = 256
+# The oldest firmware this build knows how to drive. Raise it when a change makes the
+# application depend on device behaviour an older image does not have.
+MINIMUM_FIRMWARE = (0, 1, 0)
 LOGIC_CHANNELS = 8
 LOGIC_RATES = (1_000_000, 2_000_000, 5_000_000, 10_000_000)
 LOGIC_MAX_SAMPLES = 4096
@@ -46,6 +49,33 @@ class Status:
     @property
     def requested_hz(self) -> float:
         return self.frequency_millihz / 1000
+
+
+@dataclass(frozen=True)
+class FirmwareVersion:
+    """What the device says it is.
+
+    A name and a protocol number are the same on every build, so neither can identify the
+    image running on the board. The build id can, which is what lets a measurement or a
+    bug report name the firmware that produced it.
+    """
+
+    major: int
+    minor: int
+    patch: int
+    protocol: int
+    build_id: str
+
+    @property
+    def release(self) -> tuple[int, int, int]:
+        return (self.major, self.minor, self.patch)
+
+    @property
+    def supported(self) -> bool:
+        return self.release >= MINIMUM_FIRMWARE and self.protocol == VERSION
+
+    def __str__(self) -> str:
+        return f"{self.major}.{self.minor}.{self.patch} ({self.build_id})"
 
 
 @dataclass(frozen=True)
@@ -222,6 +252,13 @@ class Instrument:
 
     def hello(self) -> str:
         return self.transport.request(Command.HELLO).decode("ascii")
+
+    def firmware_version(self) -> FirmwareVersion:
+        """Ask what build is running. Raises DeviceError on firmware that predates this."""
+        payload = self.transport.request(Command.FIRMWARE_VERSION)
+        major, minor, patch, protocol, length = struct.unpack_from("<BBBBB", payload)
+        build = bytes(payload[5 : 5 + length]).decode("ascii", "replace")
+        return FirmwareVersion(major, minor, patch, protocol, build)
 
     def capabilities(self) -> dict:
         channels, waveforms, minimum, maximum, samples = struct.unpack(

@@ -10,6 +10,7 @@ from .transport import Transport
 
 class _DeviceWorker(QObject):
     connected = Signal(str, object, object)
+    firmware_reported = Signal(object)
     status_changed = Signal(object)
     scope_status_changed = Signal(object)
     capture_ready = Signal(object)
@@ -44,6 +45,13 @@ class _DeviceWorker(QObject):
             self._capabilities = capabilities
             statuses = self._read_statuses()
             self.connected.emit(name, capabilities, statuses)
+            # Firmware older than the version command answers "unknown command". That is
+            # reported rather than treated as a failure, so an out-of-date board still
+            # connects and the user is told why it looks different.
+            try:
+                self.firmware_reported.emit(self._instrument.firmware_version())
+            except (RuntimeError, ValueError):
+                self.firmware_reported.emit(None)
             self.scope_status_changed.emit(self._instrument.scope_status())
             self.logic_status_changed.emit(self._instrument.logic_status())
             self.device_status_changed.emit(self._instrument.device_status())
@@ -281,6 +289,7 @@ class _DeviceWorker(QObject):
 
 class DeviceSession(QObject):
     connected = Signal(str, object, object)
+    firmware_reported = Signal(object)
     status_changed = Signal(object)
     scope_status_changed = Signal(object)
     capture_ready = Signal(object)
@@ -333,6 +342,7 @@ class DeviceSession(QObject):
         self._stop_mixed_requested.connect(self._worker.stop_mixed)
         self._read_mixed_requested.connect(self._worker.read_mixed_capture)
         self._worker.connected.connect(self.connected)
+        self._worker.firmware_reported.connect(self.firmware_reported)
         self._worker.status_changed.connect(self.status_changed)
         self._worker.scope_status_changed.connect(self.scope_status_changed)
         self._worker.capture_ready.connect(self.capture_ready)

@@ -7,6 +7,7 @@
 #include "probe.h"
 #include "scope.h"
 #include "tasks.h"
+#include "version.h"
 #include <string.h>
 
 static void put_u32(uint8_t *out, uint32_t value)
@@ -76,7 +77,7 @@ void command_execute(const protocol_frame_t *request, protocol_frame_t *reply)
         reply->payload[0] = REPLY_VERSION;
         return;
     }
-    if (request->command < CMD_HELLO || request->command > CMD_MIXED_STATUS) {
+    if (request->command < CMD_HELLO || request->command >= CMD_LIMIT) {
         reply->payload[0] = REPLY_COMMAND;
         return;
     }
@@ -90,6 +91,22 @@ void command_execute(const protocol_frame_t *request, protocol_frame_t *reply)
         memcpy(reply->payload + 1, "STM32-MSI", 9);
         reply->length = 10U;
         break;
+    case CMD_FIRMWARE_VERSION: {
+        /* Name and protocol number are the same on every build, so neither can say which
+           image is running. This can. */
+        reply->payload[1] = FIRMWARE_VERSION_MAJOR;
+        reply->payload[2] = FIRMWARE_VERSION_MINOR;
+        reply->payload[3] = FIRMWARE_VERSION_PATCH;
+        reply->payload[4] = PROTOCOL_VERSION;
+        size_t identity = strlen(FIRMWARE_BUILD_ID);
+        if (identity > FIRMWARE_BUILD_ID_MAX) {
+            identity = FIRMWARE_BUILD_ID_MAX;
+        }
+        reply->payload[5] = (uint8_t)identity;
+        memcpy(reply->payload + 6, FIRMWARE_BUILD_ID, identity);
+        reply->length = (uint8_t)(6U + identity);
+        break;
+    }
     case CMD_CAPABILITIES:
         reply->payload[1] = AWG_CHANNEL_COUNT;
         reply->payload[2] = (1U << AWG_WAVEFORM_COUNT) - 1U;

@@ -25,16 +25,41 @@ Analog characterization and logic timing limits remain open.
 | `docs/` | Architecture and roadmap |
 | `scripts/` | Host validation |
 
-## Device control
+## Installing
 
-The desktop application and CLI use the native CDC port on CN5, separate from
-ST-LINK. Install with `python -m pip install ./desktop`, then run:
+Two ways in. With Python available, install the wheel:
 
 ```text
+python -m pip install ./desktop
 stm32-msi-gui
 ```
 
-The CLI remains available for direct checks:
+Without Python, take the `stm32-msi-<version>` folder from a release and run the
+executable inside it; it carries its own interpreter.
+
+Flash the board over ST-LINK and confirm it came back up:
+
+```text
+python scripts/flash.py --port COM4
+```
+
+That writes the image, verifies the write, then reconnects over the CDC port and reports
+the version the board answers with. Without `--port` it writes but cannot tell you whether
+the image runs. Building a release needs `pip install ./desktop[release]`, then
+`python scripts/build_release.py`.
+
+The application warns when the firmware is older than it expects, naming both versions,
+and stays connected: a mismatch may not matter to what you are doing, but you should know
+it is there.
+
+Releases are cut by pushing a `v*` tag. The workflow refuses before building anything if
+the tag, the package version and the firmware version macros disagree, then attaches the
+wheel, the sdist, the zipped Windows application and the firmware image.
+
+## Device control
+
+The desktop application and CLI use the native CDC port on CN5, separate from
+ST-LINK. The CLI is available for direct checks:
 
 ```text
 stm32-msi --port COM5 status

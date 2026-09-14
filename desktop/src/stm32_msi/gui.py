@@ -38,6 +38,7 @@ from .instrument import (
     LOGIC_CHANNELS,
     LOGIC_RATES,
     MAX_ARBITRARY_SAMPLES,
+    MINIMUM_FIRMWARE,
     WAVEFORMS,
     Capture,
     DeviceStatus,
@@ -52,6 +53,7 @@ from .instrument import (
 from .logic import channel_bits, decode_i2c, decode_spi, decode_uart
 from .logic import measure as logic_measure
 from .mixed import Stream, align
+from .protocol import VERSION
 from .scope import adc_volts, measure
 from .session import DeviceSession
 
@@ -1476,6 +1478,7 @@ class MainWindow(QMainWindow):
         self._mixed_status = None
         self._mixed_read_id = None
         self._mixed_transfer = False
+        self._firmware = None
 
         self.setWindowTitle("STM32 Mixed-Signal Instrument")
         self.setMinimumSize(1050, 700)
@@ -1494,6 +1497,7 @@ class MainWindow(QMainWindow):
         page.setContentsMargins(16, 12, 16, 12)
         page.setSpacing(10)
         page.addLayout(self._build_connection_bar())
+        page.addWidget(self.firmware_warning)
 
         self.outputs = [OutputPanel(0, "PA4"), OutputPanel(1, "PA5")]
         self.reference_output = ReferenceOutput()
@@ -1553,12 +1557,15 @@ class MainWindow(QMainWindow):
             ("Device", self.device_label),
             ("Output", self.state_label),
             ("Capture", self.acquisition_label),
+            ("Firmware", self.firmware_label),
         ):
             self.statusBar().addPermanentWidget(QLabel(f"{caption}:"))
             self.statusBar().addPermanentWidget(label)
         self.statusBar().showMessage("Disconnected")
         self.setStyleSheet(
             "QLabel#hint { color: #888; }"
+            "QLabel#warning { color: #e6a23c; padding: 6px 10px;"
+            " border: 1px solid #e6a23c; border-radius: 4px; }"
             "QGroupBox { font-weight: 600; margin-top: 8px; }"
             "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
             "QPushButton { min-height: 28px; padding: 0 12px; }"
@@ -1581,11 +1588,19 @@ class MainWindow(QMainWindow):
         bar.addSpacing(12)
         bar.addWidget(self.advanced_button)
 
+        # A mismatch is worth saying once and leaving on screen; the status bar's message
+        # is overwritten by the next capture, so this sits in the bar instead.
+        self.firmware_warning = QLabel()
+        self.firmware_warning.setObjectName("warning")
+        self.firmware_warning.setWordWrap(True)
+        self.firmware_warning.hide()
+
         # Read at a glance, so they sit in the status bar rather than taking a row.
         self.device_label = QLabel("—")
         self.connection_label = QLabel("Disconnected")
         self.state_label = QLabel("—")
         self.acquisition_label = QLabel("—")
+        self.firmware_label = QLabel("—")
         return bar
 
     def _connect_signals(self) -> None:
@@ -1616,6 +1631,7 @@ class MainWindow(QMainWindow):
         self._session.device_status_changed.connect(self._on_device_status)
         self._session.mixed_status_changed.connect(self._on_mixed_status)
         self._session.mixed_capture_ready.connect(self._on_mixed_capture)
+        self._session.firmware_reported.connect(self._on_firmware)
         self._session.disconnected.connect(self._on_disconnected)
         self._session.error.connect(self._on_error)
         self._session.busy_changed.connect(self._set_busy)
@@ -1928,6 +1944,33 @@ class MainWindow(QMainWindow):
             self.refill_miss_label.setText(str(status.refill_misses))
         self._update_controls()
 
+    def _on_firmware(self, version) -> None:
+        """Say when the board and this application disagree, but let the session continue.
+
+        Blocking would strand a student mid-measurement over a difference that may not
+        matter to what they are doing; saying nothing would leave them guessing at a
+        missing control. So it connects, and the reason stays on screen.
+        """
+        self._firmware = version
+        wanted = ".".join(str(part) for part in MINIMUM_FIRMWARE)
+        if version is None:
+            self.firmware_label.setText("unknown")
+            self.firmware_warning.setText(
+                f"This firmware is too old to report its version. Reflash the board with "
+                f"the matching build ({wanted} or newer) if something looks missing."
+            )
+            self.firmware_warning.show()
+            return
+        self.firmware_label.setText(str(version))
+        if version.supported:
+            self.firmware_warning.hide()
+            return
+        self.firmware_warning.setText(
+            f"Firmware {version} does not match this application, which expects {wanted} "
+            f"and protocol {VERSION}. It is still connected, but some controls may not work."
+        )
+        self.firmware_warning.show()
+
     def _on_disconnected(self) -> None:
         self._connected = False
         self._polling = False
@@ -1949,6 +1992,9 @@ class MainWindow(QMainWindow):
         self._mixed_status = None
         self._mixed_read_id = None
         self._mixed_transfer = False
+        self._firmware = None
+        self.firmware_warning.hide()
+        self.firmware_label.setText("—")
         self._poll_timer.stop()
         self.connection_label.setText("Disconnected")
         self.connect_button.setText("Connect")

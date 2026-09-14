@@ -45,6 +45,7 @@ CRC. USB handles link integrity; the parser validates framing and payload length
 | 25 | MIXED_ARM | Trigger source u8 | Empty |
 | 26 | MIXED_STOP | Empty | Empty |
 | 27 | MIXED_STATUS | Empty | State u8, trigger source u8, capture ID u32, restarts u32, scope capture ID u32, logic capture ID u32 |
+| 28 | FIRMWARE_VERSION | Empty | Major u8, minor u8, patch u8, protocol u8, identity length u8, identity bytes |
 
 Commands 1 through 6 retain their original layout. Extended commands address channels
 0 and 1. Waveforms: 0 sine, 1 triangle, 2 square, 3 sawtooth, 4 DC, 5 arbitrary.

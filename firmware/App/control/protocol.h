@@ -35,7 +35,11 @@ enum {
     CMD_PROBE_STATUS,
     CMD_MIXED_ARM,
     CMD_MIXED_STOP,
-    CMD_MIXED_STATUS
+    CMD_MIXED_STATUS,
+    CMD_FIRMWARE_VERSION,
+    /* One past the last command. Range checks use this so that adding a command does not
+       also require remembering to widen a bound somewhere else. */
+    CMD_LIMIT
 };
 enum {
     REPLY_OK,

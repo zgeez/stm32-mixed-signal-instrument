@@ -24,6 +24,20 @@ target_sources(firmware PRIVATE
 target_include_directories(firmware PRIVATE
     App/awg App/control App/scope App/logic App/rtos App/probe App/mixed)
 
+# The device reports a build identity so a result or a bug report can be tied to the image
+# that produced it. Read at configure time: rebuilding after new commits without re-running
+# CMake keeps the older id, and the application reports whatever the board actually says.
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE FIRMWARE_BUILD_ID
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT FIRMWARE_BUILD_ID)
+    set(FIRMWARE_BUILD_ID "unknown")
+endif()
+target_compile_definitions(firmware PRIVATE FIRMWARE_BUILD_ID="${FIRMWARE_BUILD_ID}")
+
 # FreeRTOS is vendored from STM32Cube FW_F4 V1.28.3 because the CubeMX X-CUBE-FREERTOS
 # pack is not installed, so it is listed here rather than in the generated CMake.
 set(FREERTOS_DIR Middlewares/Third_Party/FreeRTOS/Source)

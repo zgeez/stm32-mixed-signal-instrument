@@ -17,6 +17,7 @@ from stm32_msi.gui import (
 from stm32_msi.instrument import (
     Capture,
     DeviceStatus,
+    FirmwareVersion,
     LogicCapture,
     LogicStatus,
     MixedStatus,
@@ -27,6 +28,7 @@ from stm32_msi.instrument import (
 
 class FakeSession(QObject):
     connected = Signal(str, object, object)
+    firmware_reported = Signal(object)
     status_changed = Signal(object)
     scope_status_changed = Signal(object)
     capture_ready = Signal(object)
@@ -752,6 +754,38 @@ def test_the_demoted_settings_live_in_the_advanced_panel(window, app):
         assert view.advanced.isAncestorOf(combo)
     # Still readable where the panel needs them, which is what keeps the config correct.
     assert view.scope.config().trigger_level == round(1.5 * 4095 / view.scope.reference.value())
+
+
+def test_firmware_mismatch_warns_without_blocking_the_session(window, app):
+    """Refusing would strand a student mid-measurement; silence would leave them guessing."""
+    view, session = window
+    connect(view, session, app)
+
+    session.firmware_reported.emit(FirmwareVersion(0, 0, 9, 1, "old123"))
+    app.processEvents()
+    assert not view.firmware_warning.isHidden()
+    assert "0.0.9" in view.firmware_warning.text()
+    assert view._connected, "a mismatch must not drop the connection"
+    assert view.scope.arm.isEnabled(), "and must not disable the instrument"
+
+    session.firmware_reported.emit(FirmwareVersion(0, 1, 0, 1, "a82d489"))
+    app.processEvents()
+    assert view.firmware_warning.isHidden()
+    assert view.firmware_label.text() == "0.1.0 (a82d489)"
+
+
+def test_firmware_too_old_to_report_itself_is_named_as_such(window, app):
+    view, session = window
+    connect(view, session, app)
+    session.firmware_reported.emit(None)
+    app.processEvents()
+    assert view.firmware_label.text() == "unknown"
+    assert not view.firmware_warning.isHidden()
+    assert "too old to report" in view.firmware_warning.text()
+
+    session.disconnected.emit()
+    app.processEvents()
+    assert view.firmware_warning.isHidden()
 
 
 def test_mixed_reports_when_the_windows_do_not_overlap(window, app):

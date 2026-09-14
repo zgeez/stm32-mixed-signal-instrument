@@ -3,6 +3,7 @@ import struct
 import pytest
 
 from stm32_msi.instrument import (
+    MINIMUM_FIRMWARE,
     Instrument,
     LogicConfig,
     LogicStatus,
@@ -26,6 +27,66 @@ class ScopeTransport:
             pairs = [sample | ((1000 + sample) << 16) for sample in range(offset, offset + count)]
             return struct.pack(f"<IHB{count}I", capture_id, offset, count, *pairs)
         return b""
+
+
+def test_firmware_and_package_versions_are_kept_in_step():
+    """They ship as one release, so a tag that means two different numbers is a trap.
+
+    The firmware carries its version as C macros and the package carries it in
+    pyproject.toml; nothing but this check stops one being bumped without the other.
+    """
+    import re
+    import tomllib
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    header = (repo / "firmware" / "App" / "control" / "version.h").read_text(encoding="utf-8")
+    parts = [
+        int(re.search(rf"FIRMWARE_VERSION_{field}\s+(\d+)U", header).group(1))
+        for field in ("MAJOR", "MINOR", "PATCH")
+    ]
+    with (repo / "desktop" / "pyproject.toml").open("rb") as handle:
+        package = tomllib.load(handle)["project"]["version"]
+
+    assert ".".join(str(part) for part in parts) == package
+    # The oldest supported build may lag the current one, but can never be ahead of it.
+    assert MINIMUM_FIRMWARE <= tuple(parts)
+
+
+class VersionTransport:
+    def __init__(self, reply):
+        self.reply = reply
+
+    def request(self, command, payload=b""):
+        if command == Command.FIRMWARE_VERSION:
+            if self.reply is None:
+                raise RuntimeError("unknown command")
+            return self.reply
+        return b""
+
+
+def test_firmware_version_carries_a_build_identity():
+    """A name and a protocol number are identical on every build; the id is not."""
+    reply = struct.pack("<BBBBB", 0, 1, 0, 1, 7) + b"a82d489"
+    version = Instrument(VersionTransport(reply)).firmware_version()
+    assert version.release == (0, 1, 0)
+    assert version.protocol == 1
+    assert version.build_id == "a82d489"
+    assert str(version) == "0.1.0 (a82d489)"
+    assert version.supported
+
+
+def test_firmware_older_than_this_build_is_not_supported():
+    older = struct.pack("<BBBBB", 0, 0, 9, 1, 3) + b"old"
+    assert not Instrument(VersionTransport(older)).firmware_version().supported
+    # A protocol change is a mismatch even when the release number looks new enough.
+    other = struct.pack("<BBBBB", 9, 0, 0, 2, 3) + b"new"
+    assert not Instrument(VersionTransport(other)).firmware_version().supported
+
+
+def test_firmware_predating_the_command_raises_rather_than_inventing_a_version():
+    with pytest.raises(RuntimeError):
+        Instrument(VersionTransport(None)).firmware_version()
 
 
 def test_scope_status_and_chunked_capture():

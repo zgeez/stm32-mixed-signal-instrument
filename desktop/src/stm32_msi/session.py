@@ -16,6 +16,8 @@ class _DeviceWorker(QObject):
     logic_status_changed = Signal(object)
     logic_capture_ready = Signal(object)
     device_status_changed = Signal(object)
+    mixed_status_changed = Signal(object)
+    mixed_capture_ready = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -26,6 +28,7 @@ class _DeviceWorker(QObject):
         self._transport = None
         self._instrument = None
         self._capabilities = {}
+        self._mixed_active = False
 
     @Slot(str)
     def open(self, port: str) -> None:
@@ -59,12 +62,24 @@ class _DeviceWorker(QObject):
     @Slot()
     def refresh(self) -> None:
         """Poll the unified snapshot; three separate status reads would cost three
-        round trips per tick and make the UI sluggish under load."""
+        round trips per tick and make the UI sluggish under load.
+
+        The snapshot carries no mixed fields, and mixed state is otherwise only reported
+        as a side effect of running a command, which stops happening the moment a capture
+        is armed. So a mixed capture would complete with nobody listening. Pay the second
+        round trip only while mixed is in play, including the one poll after it releases
+        the hardware so that a stop or a fault is still delivered.
+        """
         if self._instrument is None:
             self.error.emit("Device is not connected")
             return
         try:
-            self.device_status_changed.emit(self._instrument.device_status())
+            status = self._instrument.device_status()
+            self.device_status_changed.emit(status)
+            owns = status.owner_name == "mixed"
+            if owns or self._mixed_active:
+                self._mixed_active = owns
+                self.mixed_status_changed.emit(self._instrument.mixed_status())
         except (OSError, RuntimeError, ValueError) as exc:
             self.error.emit(str(exc))
             if isinstance(exc, OSError):
@@ -146,6 +161,40 @@ class _DeviceWorker(QObject):
             if isinstance(exc, OSError):
                 self._close(True)
 
+    @Slot(str)
+    def arm_mixed(self, triggered_by) -> None:
+        def arm(device):
+            device.arm_mixed(triggered_by)
+
+        self._run(arm)
+
+    @Slot()
+    def stop_mixed(self) -> None:
+        self._run(lambda device: device.stop_mixed())
+
+    @Slot()
+    def read_mixed_capture(self) -> None:
+        """Read both captures and the statuses that place them on the timeline.
+
+        The statuses are read first and passed on with the samples: they carry the
+        window origins, and re-reading them later could catch a different capture.
+        """
+        if self._instrument is None:
+            self.error.emit("Device is not connected")
+            return
+        try:
+            scope_status = self._instrument.scope_status()
+            logic_status = self._instrument.logic_status()
+            analog = self._instrument.read_capture(scope_status)
+            digital = self._instrument.read_logic_capture(logic_status)
+            self._instrument.stop_mixed()
+            self.mixed_capture_ready.emit((analog, digital, scope_status, logic_status))
+            self.mixed_status_changed.emit(self._instrument.mixed_status())
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.error.emit(str(exc))
+            if isinstance(exc, OSError):
+                self._close(True)
+
     @Slot(object)
     def arm_logic(self, config) -> None:
         def arm(device):
@@ -191,6 +240,7 @@ class _DeviceWorker(QObject):
             self.scope_status_changed.emit(self._instrument.scope_status())
             self.logic_status_changed.emit(self._instrument.logic_status())
             self.device_status_changed.emit(self._instrument.device_status())
+            self.mixed_status_changed.emit(self._instrument.mixed_status())
         except (OSError, RuntimeError, ValueError) as exc:
             self.error.emit(str(exc))
             if isinstance(exc, OSError):
@@ -205,6 +255,7 @@ class _DeviceWorker(QObject):
         self._transport = None
         self._instrument = None
         self._capabilities = {}
+        self._mixed_active = False
         if notify:
             self.disconnected.emit()
 
@@ -225,6 +276,8 @@ class DeviceSession(QObject):
     logic_status_changed = Signal(object)
     logic_capture_ready = Signal(object)
     device_status_changed = Signal(object)
+    mixed_status_changed = Signal(object)
+    mixed_capture_ready = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -241,6 +294,9 @@ class DeviceSession(QObject):
     _arm_logic_requested = Signal(object)
     _stop_logic_requested = Signal()
     _read_logic_capture_requested = Signal(object, object)
+    _arm_mixed_requested = Signal(str)
+    _stop_mixed_requested = Signal()
+    _read_mixed_requested = Signal()
 
     def __init__(self, transport_factory=Transport, parent=None):
         super().__init__(parent)
@@ -260,6 +316,9 @@ class DeviceSession(QObject):
         self._arm_logic_requested.connect(self._worker.arm_logic)
         self._stop_logic_requested.connect(self._worker.stop_logic)
         self._read_logic_capture_requested.connect(self._worker.read_logic_capture)
+        self._arm_mixed_requested.connect(self._worker.arm_mixed)
+        self._stop_mixed_requested.connect(self._worker.stop_mixed)
+        self._read_mixed_requested.connect(self._worker.read_mixed_capture)
         self._worker.connected.connect(self.connected)
         self._worker.status_changed.connect(self.status_changed)
         self._worker.scope_status_changed.connect(self.scope_status_changed)
@@ -267,6 +326,8 @@ class DeviceSession(QObject):
         self._worker.logic_status_changed.connect(self.logic_status_changed)
         self._worker.logic_capture_ready.connect(self.logic_capture_ready)
         self._worker.device_status_changed.connect(self.device_status_changed)
+        self._worker.mixed_status_changed.connect(self.mixed_status_changed)
+        self._worker.mixed_capture_ready.connect(self.mixed_capture_ready)
         self._worker.disconnected.connect(self.disconnected)
         self._worker.error.connect(self.error)
         self._worker.busy_changed.connect(self.busy_changed)
@@ -325,6 +386,15 @@ class DeviceSession(QObject):
 
     def read_logic_capture(self, status, rearm_config=None) -> None:
         self._read_logic_capture_requested.emit(status, rearm_config)
+
+    def arm_mixed(self, triggered_by: str) -> None:
+        self._arm_mixed_requested.emit(triggered_by)
+
+    def stop_mixed(self) -> None:
+        self._stop_mixed_requested.emit()
+
+    def read_mixed_capture(self) -> None:
+        self._read_mixed_requested.emit()
 
     def shutdown(self) -> None:
         if not self._thread.isRunning():

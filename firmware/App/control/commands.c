@@ -2,6 +2,7 @@
 
 #include "awg.h"
 #include "logic.h"
+#include "mixed.h"
 #include "ownership.h"
 #include "probe.h"
 #include "scope.h"
@@ -55,6 +56,8 @@ static bool valid_length(const protocol_frame_t *request)
         return request->length == 12U;
     case CMD_PROBE_CONFIG:
         return request->length == 6U;
+    case CMD_MIXED_ARM:
+        return request->length == 1U;
     case CMD_LOGIC_READ:
         return request->length == 7U && request->payload[6] >= 1U &&
                request->payload[6] <= LOGIC_READ_MAX;
@@ -73,7 +76,7 @@ void command_execute(const protocol_frame_t *request, protocol_frame_t *reply)
         reply->payload[0] = REPLY_VERSION;
         return;
     }
-    if (request->command < CMD_HELLO || request->command > CMD_PROBE_STATUS) {
+    if (request->command < CMD_HELLO || request->command > CMD_MIXED_STATUS) {
         reply->payload[0] = REPLY_COMMAND;
         return;
     }
@@ -191,7 +194,8 @@ void command_execute(const protocol_frame_t *request, protocol_frame_t *reply)
         put_u32(reply->payload + 14, scope.trigger_misses);
         put_u32(reply->payload + 18, scope.overruns);
         put_u32(reply->payload + 22, scope.dma_errors);
-        reply->length = 26U;
+        put_u16(reply->payload + 26, scope.window_origin);
+        reply->length = 28U;
         break;
     }
     case CMD_SCOPE_READ: {
@@ -240,7 +244,8 @@ void command_execute(const protocol_frame_t *request, protocol_frame_t *reply)
         put_u32(reply->payload + 18, logic.trigger_misses);
         put_u32(reply->payload + 22, logic.overruns);
         put_u32(reply->payload + 26, logic.dma_errors);
-        reply->length = 30U;
+        put_u16(reply->payload + 30, logic.window_origin);
+        reply->length = 32U;
         break;
     }
     case CMD_LOGIC_READ: {
@@ -309,6 +314,23 @@ void command_execute(const protocol_frame_t *request, protocol_frame_t *reply)
         put_u16(reply->payload + 12, probe.prescaler);
         put_u16(reply->payload + 14, probe.reload);
         reply->length = 16U;
+        break;
+    }
+    case CMD_MIXED_ARM:
+        result = (awg_result_t)mixed_arm((mixed_trigger_t)request->payload[0]);
+        break;
+    case CMD_MIXED_STOP:
+        result = (awg_result_t)mixed_stop();
+        break;
+    case CMD_MIXED_STATUS: {
+        mixed_status_t mixed = mixed_get_status();
+        reply->payload[1] = (uint8_t)mixed.state;
+        reply->payload[2] = (uint8_t)mixed.trigger;
+        put_u32(reply->payload + 3, mixed.capture_id);
+        put_u32(reply->payload + 7, mixed.restarts);
+        put_u32(reply->payload + 11, mixed.scope_capture_id);
+        put_u32(reply->payload + 15, mixed.logic_capture_id);
+        reply->length = 19U;
         break;
     }
     }

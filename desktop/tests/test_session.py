@@ -20,9 +20,12 @@ class TransportStub:
         self.frequencies = [1000, 1000]
         self.logic_state = 0
         self.logic_rate = 1_000_000
+        self.mixed_state = 0
+        self.requests = []
         self.closed = False
 
     def request(self, command, payload=b""):
+        self.requests.append(command)
         if command == Command.HELLO:
             return b"STM32-MSI"
         if command == Command.CAPABILITIES:
@@ -55,7 +58,7 @@ class TransportStub:
                 0,
             )
         if command == Command.SCOPE_STATUS:
-            return struct.pack("<BIHHIIII", 0, 100_000, 512, 256, 0, 0, 0, 0)
+            return struct.pack("<BIHHIIIIH", 0, 100_000, 512, 256, 0, 0, 0, 0, 0)
         if command == Command.LOGIC_CONFIG:
             self.logic_rate = struct.unpack_from("<I", payload)[0]
         elif command == Command.LOGIC_ARM:
@@ -64,7 +67,7 @@ class TransportStub:
             self.logic_state = 0
         if command == Command.LOGIC_STATUS:
             return struct.pack(
-                "<BIIHHIIII",
+                "<BIIHHIIIIH",
                 self.logic_state,
                 self.logic_rate,
                 self.logic_rate,
@@ -74,10 +77,17 @@ class TransportStub:
                 0,
                 0,
                 0,
+                0,
             )
+        if command == Command.MIXED_ARM:
+            self.mixed_state = 2   # the capture is short, so it completes immediately
+        elif command == Command.MIXED_STOP:
+            self.mixed_state = 0
+        if command == Command.MIXED_STATUS:
+            return struct.pack("<BBIIII", self.mixed_state, 1, 7, 0, 7, 7)
         if command == Command.DEVICE_STATUS:
             # Arming logic takes the acquisition hardware; stopping hands it back.
-            owner = 2 if self.logic_state else 0
+            owner = 3 if self.mixed_state else (2 if self.logic_state else 0)
             return struct.pack(
                 "<BIBIIIBIIIIBIIII",
                 owner,
@@ -131,6 +141,43 @@ def wait_for(signal, action, match=None):
     signal.disconnect(receive)
     assert result
     return result[0]
+
+
+def test_the_poll_reports_mixed_state(app):
+    """A mixed capture would otherwise complete with nobody listening.
+
+    Mixed state reaches the application only as a side effect of running a command, and
+    no command runs between arming a capture and it completing. The device snapshot
+    carries no mixed fields, so the poll has to ask for it separately, which it should do
+    only while mixed owns the hardware.
+    """
+    created = []
+
+    def factory(port):
+        stub = TransportStub(port)
+        created.append(stub)
+        return stub
+
+    session = DeviceSession(factory)
+    try:
+        wait_for(session.connected, lambda: session.connect_device("test"))
+        stub = created[0]
+
+        # Idle: the poll stays the single round trip it was written to be.
+        stub.requests.clear()
+        wait_for(session.device_status_changed, session.refresh)
+        assert Command.MIXED_STATUS not in stub.requests
+
+        wait_for(session.mixed_status_changed, lambda: session.arm_mixed("logic"))
+
+        # Armed: nothing else is sent, so only the poll can discover that it finished.
+        (status,) = wait_for(
+            session.mixed_status_changed, session.refresh, match=lambda s: s.state == 2
+        )
+        assert status.state == 2
+        assert status.trigger_name == "logic"
+    finally:
+        session.shutdown()
 
 
 def test_session_runs_connection_and_commands_on_worker_thread(app):

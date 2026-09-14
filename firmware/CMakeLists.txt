@@ -19,9 +19,10 @@ target_sources(firmware PRIVATE
     App/scope/scope.c App/scope/scope_trigger.c
     App/logic/logic.c App/logic/logic_trigger.c
     App/control/ownership.c App/rtos/tasks.c
-    App/probe/probe.c App/probe/probe_divider.c)
+    App/probe/probe.c App/probe/probe_divider.c
+    App/mixed/mixed.c App/mixed/mixed_policy.c)
 target_include_directories(firmware PRIVATE
-    App/awg App/control App/scope App/logic App/rtos App/probe)
+    App/awg App/control App/scope App/logic App/rtos App/probe App/mixed)
 
 # FreeRTOS is vendored from STM32Cube FW_F4 V1.28.3 because the CubeMX X-CUBE-FREERTOS
 # pack is not installed, so it is listed here rather than in the generated CMake.

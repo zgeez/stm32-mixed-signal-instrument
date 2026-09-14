@@ -4,6 +4,7 @@
 #include "scope.h"
 #include "logic.h"
 #include "ownership.h"
+#include "mixed.h"
 #include "probe.h"
 #include "tasks.h"
 
@@ -107,6 +108,7 @@ scope_status_t scope_get_status(void)
     return (scope_status_t){.state = SCOPE_COMPLETE,
                             .config = {.sample_rate = 500000U, .sample_count = 512U},
                             .trigger_index = 128U,
+                            .window_origin = 40U,
                             .capture_id = 9U,
                             .trigger_misses = 4U,
                             .overruns = 2U,
@@ -133,6 +135,7 @@ logic_status_t logic_get_status(void)
                             .config = {.sample_rate = 5000000U, .sample_count = 1024U},
                             .actual_rate = 4941176U,
                             .trigger_index = 256U,
+                            .window_origin = 60U,
                             .capture_id = 7U,
                             .trigger_misses = 5U,
                             .overruns = 3U,
@@ -145,6 +148,22 @@ bool logic_read(uint32_t capture_id, uint16_t offset, uint8_t count, uint8_t *sa
     return true;
 }
 void logic_process(void) {}
+static mixed_status_t mixed_state;
+mixed_result_t mixed_arm(mixed_trigger_t trigger)
+{
+    ++calls;
+    mixed_state.trigger = trigger;
+    mixed_state.state = MIXED_ARMED;
+    return (mixed_result_t)result;
+}
+mixed_result_t mixed_stop(void)
+{
+    ++calls;
+    mixed_state.state = MIXED_IDLE;
+    return (mixed_result_t)result;
+}
+mixed_status_t mixed_get_status(void) { return mixed_state; }
+void mixed_process(void) {}
 uint32_t tasks_stack_headroom(app_task_t task)
 {
     return 100U + (uint32_t)task;
@@ -324,7 +343,8 @@ int main(int argc, char **argv)
     frame.command = CMD_SCOPE_STATUS;
     frame.length = 0U;
     command_execute(&frame, &reply);
-    CHECK(reply.length == 26U && reply.payload[1] == SCOPE_COMPLETE);
+    CHECK(reply.length == 28U && reply.payload[1] == SCOPE_COMPLETE);
+    CHECK(reply.payload[26] == 40U); /* window origin */
     CHECK(reply.payload[10] == 9U && reply.payload[14] == 4U && reply.payload[18] == 2U);
 
     scope_samples[0] = 100U | (200U << 16);
@@ -352,7 +372,8 @@ int main(int argc, char **argv)
     frame.command = CMD_LOGIC_STATUS;
     frame.length = 0U;
     command_execute(&frame, &reply);
-    CHECK(reply.length == 30U && reply.payload[1] == LOGIC_COMPLETE);
+    CHECK(reply.length == 32U && reply.payload[1] == LOGIC_COMPLETE);
+    CHECK(reply.payload[30] == 60U); /* window origin */
     CHECK(reply.payload[2] == 0x40U && reply.payload[14] == 7U && reply.payload[22] == 3U);
 
     logic_samples[0] = 0xa5U;
@@ -389,7 +410,7 @@ int main(int argc, char **argv)
     CHECK(reply.payload[1] == TASK_COUNT && reply.payload[2] == 100U);
     CHECK(reply.payload[2U + 4U * TASK_COUNT] == 0U);
 
-    frame.command = CMD_PROBE_STATUS + 1U;
+    frame.command = CMD_MIXED_STATUS + 1U;
     command_execute(&frame, &reply);
     CHECK(reply.payload[0] == REPLY_COMMAND);
 
@@ -421,6 +442,24 @@ int main(int argc, char **argv)
     frame.length = 6U;
     const uint8_t too_fast[] = {0x00, 0x00, 0x00, 0x80, 0xf4, 0x01};
     memcpy(frame.payload, too_fast, sizeof too_fast);
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[0] == REPLY_INVALID);
+
+    frame.command = CMD_MIXED_ARM;
+    frame.length = 1U;
+    frame.payload[0] = 1U;
+    result = AWG_OK;
+    command_execute(&frame, &reply);
+    CHECK(reply.payload[0] == REPLY_OK);
+
+    frame.command = CMD_MIXED_STATUS;
+    frame.length = 0U;
+    command_execute(&frame, &reply);
+    CHECK(reply.length == 19U);
+    CHECK(reply.payload[2] == MIXED_TRIGGER_LOGIC);
+
+    frame.command = CMD_MIXED_ARM;
+    frame.length = 2U;
     command_execute(&frame, &reply);
     CHECK(reply.payload[0] == REPLY_INVALID);
 

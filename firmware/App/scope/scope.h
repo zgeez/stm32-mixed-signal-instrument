@@ -34,6 +34,9 @@ typedef struct {
     scope_state_t state;
     scope_config_t config;
     uint16_t trigger_index;
+    /* Samples from the start of acquisition to window sample zero. Mixed capture
+       needs this to place both streams on one timeline. */
+    uint16_t window_origin;
     uint32_t capture_id;
     uint32_t trigger_misses;
     uint32_t overruns;
@@ -42,6 +45,10 @@ typedef struct {
 
 scope_result_t scope_configure(const scope_config_t *config);
 scope_result_t scope_arm(void);
+/* Arm without claiming ownership or starting TIM2; the caller holds the mixed
+   claim and releases both timers together. */
+scope_result_t scope_arm_synchronised(void);
+void scope_follow_trigger(bool follow);
 scope_result_t scope_stop(void);
 scope_status_t scope_get_status(void);
 bool scope_read(uint32_t capture_id, uint16_t offset, uint8_t count, uint32_t *samples);

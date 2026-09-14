@@ -4,6 +4,7 @@
 #include "awg.h"
 #include "cmsis_os2.h"
 #include "logic.h"
+#include "mixed.h"
 #include "main.h"
 #include "scope.h"
 #include "task.h"
@@ -58,6 +59,7 @@ static void acquire_thread(void *argument)
          * both without either stealing the other's bus time. */
         scope_process();
         logic_process();
+        mixed_process();
     }
 }
 

@@ -34,6 +34,9 @@ class Command(IntEnum):
     RTOS_STATUS = 22
     PROBE_CONFIG = 23
     PROBE_STATUS = 24
+    MIXED_ARM = 25
+    MIXED_STOP = 26
+    MIXED_STATUS = 27
 
 
 @dataclass(frozen=True)

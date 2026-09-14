@@ -34,6 +34,9 @@ typedef struct {
     logic_config_t config;
     uint32_t actual_rate;
     uint16_t trigger_index;
+    /* Samples from the start of acquisition to window sample zero. Mixed capture
+       needs this to place both streams on one timeline. */
+    uint16_t window_origin;
     uint32_t capture_id;
     uint32_t trigger_misses;
     uint32_t overruns;
@@ -43,6 +46,10 @@ typedef struct {
 uint32_t logic_actual_rate(uint32_t requested_rate);
 logic_result_t logic_configure(const logic_config_t *config);
 logic_result_t logic_arm(void);
+/* Arm without claiming ownership or starting TIM1; the caller holds the mixed
+   claim and releases both timers together. */
+logic_result_t logic_arm_synchronised(void);
+logic_result_t logic_release_trigger(void);
 logic_result_t logic_stop(void);
 logic_status_t logic_get_status(void);
 bool logic_read(uint32_t capture_id, uint16_t offset, uint8_t count, uint8_t *samples);

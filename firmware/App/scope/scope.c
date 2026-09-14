@@ -22,6 +22,7 @@ static scope_status_t status = {
                .trigger_level = 2048U,
                .pretrigger_permille = 500U}};
 static volatile bool dma_complete;
+static bool synchronised;
 static volatile bool dma_failed;
 static volatile bool adc_overrun;
 
@@ -52,11 +53,14 @@ static void stop_hardware(void)
     HAL_ADC_Stop(&hadc2);
 }
 
-static bool start_hardware(void)
+static bool start_hardware(bool start_timer)
 {
     uint32_t raw_count = (uint32_t)status.config.sample_count * 2U;
     __HAL_TIM_SET_AUTORELOAD(&htim2, TIM2_CLOCK_HZ / status.config.sample_rate - 1U);
     __HAL_TIM_SET_COUNTER(&htim2, 0U);
+    /* Apply the period before enabling ADC triggers. */
+    htim2.Instance->EGR = TIM_EGR_UG;
+    __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_UPDATE);
     dma_complete = false;
     dma_failed = false;
     adc_overrun = false;
@@ -67,12 +71,41 @@ static bool start_hardware(void)
         HAL_ADC_Stop(&hadc2);
         return false;
     }
-    if (HAL_TIM_Base_Start(&htim2) != HAL_OK) {
+    if (start_timer && HAL_TIM_Base_Start(&htim2) != HAL_OK) {
         HAL_ADCEx_MultiModeStop_DMA(&hadc1);
         HAL_ADC_Stop(&hadc2);
         return false;
     }
     return true;
+}
+
+/* Mixed capture starts both timers from one event. TIM2's ITR0 is TIM1's trigger
+   output, so slaving it here lets TIM1 release both at the same instant. */
+void scope_follow_trigger(bool follow)
+{
+    if (follow) {
+        MODIFY_REG(htim2.Instance->SMCR, TIM_SMCR_SMS | TIM_SMCR_TS,
+                   TIM_SLAVEMODE_TRIGGER | TIM_TS_ITR0);
+    } else {
+        CLEAR_BIT(htim2.Instance->SMCR, TIM_SMCR_SMS | TIM_SMCR_TS);
+    }
+}
+
+scope_result_t scope_arm_synchronised(void)
+{
+    /* The caller holds the mixed claim, so no ownership is taken here. */
+    if (status.state == SCOPE_ARMED) {
+        return SCOPE_BUSY;
+    }
+    synchronised = true;
+    scope_follow_trigger(true);
+    if (!start_hardware(false)) {
+        ++status.dma_errors;
+        status.state = SCOPE_FAULT;
+        return SCOPE_HW_ERROR;
+    }
+    status.state = SCOPE_ARMED;
+    return SCOPE_OK;
 }
 
 scope_result_t scope_configure(const scope_config_t *config)
@@ -98,7 +131,9 @@ scope_result_t scope_arm(void)
     if (!claim_hardware()) {
         return SCOPE_BUSY;
     }
-    if (!start_hardware()) {
+    synchronised = false;
+    scope_follow_trigger(false);
+    if (!start_hardware(true)) {
         release_hardware();
         ++status.dma_errors;
         status.state = SCOPE_FAULT;
@@ -164,7 +199,12 @@ void scope_process(void)
     }
     if (!found) {
         ++status.trigger_misses;
-        if (!start_hardware()) {
+        if (synchronised) {
+            /* Mixed capture owns the restart, so that both streams begin together. */
+            status.state = SCOPE_IDLE;
+            return;
+        }
+        if (!start_hardware(true)) {
             ++status.dma_errors;
             status.state = SCOPE_FAULT;
             release_hardware();
@@ -173,6 +213,7 @@ void scope_process(void)
     }
     memcpy(capture_samples, raw_samples + trigger - pre, (size_t)count * sizeof *capture_samples);
     status.trigger_index = pre;
+    status.window_origin = (uint16_t)(trigger - pre);
     ++status.capture_id;
     status.state = SCOPE_COMPLETE;
 }
@@ -189,7 +230,10 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
 {
     if (hadc->Instance == ADC1) {
-        if ((hadc->ErrorCode & HAL_ADC_ERROR_OVR) != 0U) {
+        /* Normal DMA protects the completed buffer while the DMA IRQ is pending.
+           Extra conversions after its last transfer are outside the capture. */
+        if ((hadc->ErrorCode & HAL_ADC_ERROR_OVR) != 0U &&
+            __HAL_DMA_GET_COUNTER(hadc->DMA_Handle) != 0U) {
             adc_overrun = true;
         }
         if ((hadc->ErrorCode & HAL_ADC_ERROR_DMA) != 0U) {

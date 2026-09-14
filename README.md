@@ -45,6 +45,23 @@ stm32-msi --port COM5 start
 
 Replace COM5 with the enumerated CDC port. [Protocol](protocol/README.md)
 
+## Waveform generator
+
+Two independent outputs on PA4 and PA5 produce sine, triangle, square, sawtooth, DC and
+2..256-entry arbitrary tables from 1 Hz to 20 kHz; boot starts a 1 kHz sine on PA4. A
+32-bit phase accumulator clocked at 400 kS/s gives a 93.13 uHz frequency step, finer than
+the millihertz the protocol accepts. Amplitude, offset and phase are set per channel to
+0.1 resolution, as percentages of DAC full scale and as degrees. Amplitude is peak-to-peak
+and offset is the center, and combinations that would exceed the DAC range are rejected
+rather than silently clipped.
+
+Each channel streams through circular DMA in 512-sample halves with a 1.28 ms refill
+deadline. A refill that misses its half faults and stops the timer instead of repeating
+stale samples. Both outputs can run while the scope or logic analyzer captures.
+
+Absolute amplitude accuracy, distortion and bandwidth remain uncharacterized, and PA4 is
+loaded by the board's audio codec connection.
+
 ## Scope
 
 The oscilloscope captures 64 to 2048 simultaneous sample pairs from PC4 and PC5.
@@ -63,6 +80,17 @@ UART, SPI and I2C.
 
 Short pulses can be missed without a DMA error. Asynchronous pulse limits remain
 uncharacterized; 10 MS/s is experimental.
+
+## Mixed signal
+
+Both captures can run from one timer event, so analog and digital samples sit on a single
+timeline. Each stream reports where its window begins relative to that shared start, and
+the desktop draws both against one time axis with zero at the trigger. Only one stream
+may hold the trigger; the other free-runs and is placed by index.
+
+A shared start is not a shared sampling instant. Measured skew between the two paths is
+-119.7 ns, which is the ADC's sample-and-hold aperture; no jitter is resolvable above the
+sampling quantization.
 
 ## Concurrency
 

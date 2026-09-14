@@ -14,11 +14,11 @@
 | 9. Characterization | Measured limits, error budgets and performance reports | Repeatable measurements with configuration and equipment recorded |
 | 10. Distribution | Packaged desktop releases, firmware installation and compatibility checks | Clean-machine install, flash, verification, reconnect and upgrade tests |
 
-Milestones 0 through 7 have passing host checks and recorded board results. Milestones
-6 and 7 now include deadline regression, measured refill latency, controlled DMA fault
-handling and USB backpressure recovery checks. Hardware generation of FIFO/direct-mode
-errors and broader timing characterization remain open. Analog accuracy and bandwidth
-characterization remain in milestone 9. See [validation](validation.md).
+Milestones 0 through 7 have passing host checks and recorded board results. Milestone 8
+has host, coordination, shared-clock skew and all-rate capture results.
+Characterization includes Debug/Release refill timing, hardware DMA error
+recovery and USB backpressure. Independent timing, analog accuracy and bandwidth
+measurements remain in milestone 9. See [validation](validation.md).
 
 ADC progression: 100 kS/s, 500 kS/s, then 1 MS/s if validated. GPIO acquisition
 starts at 1 MS/s, followed by 2 and 5 MS/s; 10 MS/s is an experiment. These are

@@ -19,7 +19,7 @@ class ScopeTransport:
 
     def request(self, command, payload=b""):
         if command == Command.SCOPE_STATUS:
-            return struct.pack("<BIHHIIII", 2, 500_000, 13, 6, 7, 1, 2, 3)
+            return struct.pack("<BIHHIIIIH", 2, 500_000, 13, 6, 7, 1, 2, 3, 40)
         if command == Command.SCOPE_READ:
             capture_id, offset, count = struct.unpack("<IHB", payload)
             self.read_offsets.append(offset)
@@ -32,7 +32,7 @@ def test_scope_status_and_chunked_capture():
     transport = ScopeTransport()
     instrument = Instrument(transport)
     status = instrument.scope_status()
-    assert status == ScopeStatus(2, 500_000, 13, 6, 7, 1, 2, 3)
+    assert status == ScopeStatus(2, 500_000, 13, 6, 7, 1, 2, 3, 40)
 
     capture = instrument.read_capture(status)
     assert transport.read_offsets == [0, 12]
@@ -52,7 +52,7 @@ class LogicTransport:
             return b""
         if command == Command.LOGIC_STATUS:
             return struct.pack(
-                "<BIIHHIIII", 2, 5_000_000, 4_941_176, self.sample_count, 25, 4, 1, 2, 3
+                "<BIIHHIIIIH", 2, 5_000_000, 4_941_176, self.sample_count, 25, 4, 1, 2, 3, 60
             )
         if command == Command.LOGIC_READ:
             capture_id, offset, count = struct.unpack("<IHB", payload)
@@ -66,7 +66,7 @@ def test_logic_status_and_chunked_capture():
     transport = LogicTransport()
     instrument = Instrument(transport)
     status = instrument.logic_status()
-    assert status == LogicStatus(2, 5_000_000, 4_941_176, 100, 25, 4, 1, 2, 3)
+    assert status == LogicStatus(2, 5_000_000, 4_941_176, 100, 25, 4, 1, 2, 3, 60)
 
     capture = instrument.read_logic_capture(status)
     assert transport.read_offsets == [0, 48, 96]

@@ -31,17 +31,20 @@ CRC. USB handles link integrity; the parser validates framing and payload length
 | 11 | SCOPE_CONFIG | Rate u32, count u16, trigger channel u8, edge u8, level u16, pre-trigger permille u16 | Empty |
 | 12 | SCOPE_ARM | Empty | Empty |
 | 13 | SCOPE_STOP | Empty | Empty |
-| 14 | SCOPE_STATUS | Empty | State u8, rate u32, count u16, trigger index u16, capture ID u32, trigger misses u32, overruns u32, DMA errors u32 |
+| 14 | SCOPE_STATUS | Empty | State u8, rate u32, count u16, trigger index u16, capture ID u32, trigger misses u32, overruns u32, DMA errors u32, window origin u16 |
 | 15 | SCOPE_READ | Capture ID u32, offset u16, count u8 | Capture ID u32, offset u16, count u8, packed sample pairs u32 |
 | 16 | LOGIC_CONFIG | Rate u32, count u16, mode u8, channel u8, mask u8, value u8, pre-trigger permille u16 | Empty |
 | 17 | LOGIC_ARM | Empty | Empty |
 | 18 | LOGIC_STOP | Empty | Empty |
-| 19 | LOGIC_STATUS | Empty | State u8, requested rate u32, actual rate u32, count u16, trigger index u16, capture ID u32, trigger misses u32, overruns u32, DMA errors u32 |
+| 19 | LOGIC_STATUS | Empty | State u8, requested rate u32, actual rate u32, count u16, trigger index u16, capture ID u32, trigger misses u32, overruns u32, DMA errors u32, window origin u16 |
 | 20 | LOGIC_READ | Capture ID u32, offset u16, count u8 | Capture ID u32, offset u16, count u8, channel bytes |
 | 21 | DEVICE_STATUS | Empty | Owner u8, conflicts u32, AWG state u8, underruns u32, DMA errors u32, refill misses u32, scope state u8, capture ID u32, trigger misses u32, overruns u32, DMA errors u32, logic state u8, capture ID u32, trigger misses u32, overruns u32, DMA errors u32 |
 | 22 | RTOS_STATUS | Empty | Task count u8, stack headroom u32 per task, heap free u32, heap low water u32 |
 | 23 | PROBE_CONFIG | Frequency Hz u32, duty permille u16 | Empty |
 | 24 | PROBE_STATUS | Empty | Enabled u8, requested Hz u32, actual Hz u32, duty permille u16, prescaler u16, reload u16 |
+| 25 | MIXED_ARM | Trigger source u8 | Empty |
+| 26 | MIXED_STOP | Empty | Empty |
+| 27 | MIXED_STATUS | Empty | State u8, trigger source u8, capture ID u32, restarts u32, scope capture ID u32, logic capture ID u32 |
 
 Commands 1 through 6 retain their original layout. Extended commands address channels
 0 and 1. Waveforms: 0 sine, 1 triangle, 2 square, 3 sawtooth, 4 DC, 5 arbitrary.
@@ -94,3 +97,20 @@ PROBE_CONFIG controls TIM3 PWM on PC6: zero Hz disables it; otherwise request 1 
 to 42 MHz and duty 1..999 permille. Integer dividers limit achievable frequency;
 PROBE_STATUS reports the programmed rate and registers. Compare values are clamped
 to keep the output toggling.
+
+MIXED_ARM starts both captures from one timer event so their samples share an origin.
+Trigger source is 0 for the scope and 1 for the logic analyzer; the other stream must be
+configured free-running, and the command is refused with status 1 otherwise, because a
+second trigger search would choose its own window and break the alignment. Mixed capture
+claims the acquisition hardware as a single owner, so a standalone arm is refused while
+it holds it, and the reverse.
+
+**Window origin** is how many samples elapsed between the shared start and the first
+sample of the returned window. With the rate, that is enough to place every sample:
+`time(i) = (window_origin + i) / rate`. Both streams measure it from the same instant,
+so a common timeline follows without resampling either one. Mixed states are 0 idle,
+1 armed, 2 complete and 3 fault, matching the scope and the analyzer.
+
+A shared origin is not a shared sampling instant. The ADC holds its input for three
+cycles after its trigger while a GPIO read happens whenever DMA wins the bus, so a skew
+remains between the two paths; it is measured on the board rather than corrected for.

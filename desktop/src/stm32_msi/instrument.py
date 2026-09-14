@@ -24,7 +24,7 @@ LOGIC_READ_MAX = 48
 TIMER_CLOCK_HZ = 168_000_000
 PROBE_CLOCK_HZ = 84_000_000
 PROBE_MAX_HZ = PROBE_CLOCK_HZ // 2
-ACQUISITION_OWNERS = ("none", "scope", "logic")
+ACQUISITION_OWNERS = ("none", "scope", "logic", "mixed")
 TASK_NAMES = ("awg", "acquire", "control", "status")
 
 
@@ -68,6 +68,7 @@ class ScopeStatus:
     trigger_misses: int
     overruns: int
     dma_errors: int
+    window_origin: int = 0
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,7 @@ class LogicStatus:
     trigger_misses: int
     overruns: int
     dma_errors: int
+    window_origin: int = 0
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,20 @@ class DeviceStatus:
             self.logic_overruns,
             self.logic_dma_errors,
         )
+
+
+@dataclass(frozen=True)
+class MixedStatus:
+    state: int
+    trigger: int
+    capture_id: int
+    restarts: int
+    scope_capture_id: int
+    logic_capture_id: int
+
+    @property
+    def trigger_name(self) -> str:
+        return ("scope", "logic")[self.trigger] if self.trigger < 2 else "?"
 
 
 @dataclass(frozen=True)
@@ -327,7 +343,7 @@ class Instrument:
 
     def scope_status(self) -> ScopeStatus:
         return ScopeStatus(
-            *struct.unpack("<BIHHIIII", self.transport.request(Command.SCOPE_STATUS))
+            *struct.unpack("<BIHHIIIIH", self.transport.request(Command.SCOPE_STATUS))
         )
 
     def read_capture(self, status: ScopeStatus) -> Capture:
@@ -382,7 +398,7 @@ class Instrument:
 
     def logic_status(self) -> LogicStatus:
         return LogicStatus(
-            *struct.unpack("<BIIHHIIII", self.transport.request(Command.LOGIC_STATUS))
+            *struct.unpack("<BIIHHIIIIH", self.transport.request(Command.LOGIC_STATUS))
         )
 
     def device_status(self) -> DeviceStatus:
@@ -396,6 +412,22 @@ class Instrument:
         headroom = struct.unpack_from(f"<{count}I", payload, 1)
         heap_free, heap_low = struct.unpack_from("<II", payload, 1 + 4 * count)
         return RtosStatus(headroom, heap_free, heap_low)
+
+    def arm_mixed(self, triggered_by: str = "logic") -> None:
+        """Start both captures from one timer event.
+
+        The follower must be free-running; the device refuses otherwise, because a
+        second trigger search would pick its own window and break the shared origin.
+        """
+        if triggered_by not in ("scope", "logic"):
+            raise ValueError("Mixed capture is triggered by the scope or the logic analyzer")
+        self.transport.request(Command.MIXED_ARM, bytes([0 if triggered_by == "scope" else 1]))
+
+    def stop_mixed(self) -> None:
+        self.transport.request(Command.MIXED_STOP)
+
+    def mixed_status(self) -> MixedStatus:
+        return MixedStatus(*struct.unpack("<BBIIII", self.transport.request(Command.MIXED_STATUS)))
 
     def configure_probe(self, frequency_hz: int, duty_percent: float = 50.0) -> None:
         """Set the reference output. A frequency of zero turns it off."""

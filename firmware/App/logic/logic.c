@@ -23,6 +23,7 @@ static logic_status_t status = {
                .pretrigger_permille = 500U},
     .actual_rate = 1000000U};
 static volatile bool dma_complete;
+static bool synchronised;
 static volatile bool dma_failed;
 static volatile bool dma_overrun;
 
@@ -87,7 +88,7 @@ static void stop_hardware(void)
     HAL_DMA_Abort(&hdma_tim1_up);
 }
 
-static bool start_hardware(void)
+static bool start_hardware(bool start_timer)
 {
     uint32_t raw_count = (uint32_t)status.config.sample_count * 2U;
     __HAL_TIM_DISABLE_DMA(&htim1, TIM_DMA_UPDATE);
@@ -105,11 +106,33 @@ static bool start_hardware(void)
     /* HAL_DMA_Start_IT leaves the FIFO error interrupt masked. */
     __HAL_DMA_ENABLE_IT(&hdma_tim1_up, DMA_IT_FE);
     __HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_UPDATE);
-    if (HAL_TIM_Base_Start(&htim1) != HAL_OK) {
+    if (start_timer && HAL_TIM_Base_Start(&htim1) != HAL_OK) {
         stop_hardware();
         return false;
     }
     return true;
+}
+
+logic_result_t logic_arm_synchronised(void)
+{
+    /* The caller holds the mixed claim, so no ownership is taken here. */
+    synchronised = true;
+    if (status.state == LOGIC_ARMED) {
+        return LOGIC_BUSY;
+    }
+    if (!start_hardware(false)) {
+        ++status.dma_errors;
+        status.state = LOGIC_FAULT;
+        return LOGIC_HW_ERROR;
+    }
+    status.state = LOGIC_ARMED;
+    return LOGIC_OK;
+}
+
+/* TIM1's trigger output is set to fire on enable, so this releases TIM2 as well. */
+logic_result_t logic_release_trigger(void)
+{
+    return HAL_TIM_Base_Start(&htim1) == HAL_OK ? LOGIC_OK : LOGIC_HW_ERROR;
 }
 
 logic_result_t logic_configure(const logic_config_t *config)
@@ -132,13 +155,14 @@ logic_result_t logic_configure(const logic_config_t *config)
 
 logic_result_t logic_arm(void)
 {
+    synchronised = false;
     if (status.state == LOGIC_ARMED) {
         return LOGIC_BUSY;
     }
     if (!claim_hardware()) {
         return LOGIC_BUSY;
     }
-    if (!start_hardware()) {
+    if (!start_hardware(true)) {
         release_hardware();
         ++status.dma_errors;
         status.state = LOGIC_FAULT;
@@ -202,7 +226,12 @@ void logic_process(void)
     }
     if (!found) {
         ++status.trigger_misses;
-        if (!start_hardware()) {
+        if (synchronised) {
+            /* Mixed capture owns the restart, so that both streams begin together. */
+            status.state = LOGIC_IDLE;
+            return;
+        }
+        if (!start_hardware(true)) {
             ++status.dma_errors;
             status.state = LOGIC_FAULT;
             release_hardware();
@@ -211,6 +240,7 @@ void logic_process(void)
     }
     logic_extract(raw_samples + trigger - pre, count, capture_samples);
     status.trigger_index = pre;
+    status.window_origin = (uint16_t)(trigger - pre);
     ++status.capture_id;
     status.state = LOGIC_COMPLETE;
 }

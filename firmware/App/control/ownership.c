@@ -5,7 +5,8 @@ ownership_t acquisition_ownership;
 
 static bool valid(acquisition_owner_t who)
 {
-    return who == ACQUISITION_SCOPE || who == ACQUISITION_LOGIC;
+    return who == ACQUISITION_SCOPE || who == ACQUISITION_LOGIC ||
+           who == ACQUISITION_MIXED;
 }
 
 bool ownership_claim(ownership_t *state, acquisition_owner_t claimant)

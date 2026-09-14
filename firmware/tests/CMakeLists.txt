@@ -9,11 +9,13 @@ target_include_directories(test_awg_refill PRIVATE ../App/awg)
 add_executable(test_protocol test_protocol.c ../App/control/protocol.c ../App/control/commands.c
     ../App/control/ownership.c ../App/probe/probe_divider.c)
 target_include_directories(test_protocol PRIVATE ../App/control ../App/awg ../App/scope
-    ../App/logic ../App/rtos ../App/probe)
+    ../App/logic ../App/rtos ../App/probe ../App/mixed)
 add_executable(test_scope_trigger test_scope_trigger.c ../App/scope/scope_trigger.c)
 target_include_directories(test_scope_trigger PRIVATE ../App/scope)
 add_executable(test_probe_divider test_probe_divider.c ../App/probe/probe_divider.c)
 target_include_directories(test_probe_divider PRIVATE ../App/probe)
+add_executable(test_mixed_policy test_mixed_policy.c ../App/mixed/mixed_policy.c)
+target_include_directories(test_mixed_policy PRIVATE ../App/mixed ../App/scope ../App/logic)
 add_executable(test_ownership test_ownership.c ../App/control/ownership.c)
 target_include_directories(test_ownership PRIVATE ../App/control)
 add_executable(test_logic_trigger test_logic_trigger.c ../App/logic/logic_trigger.c)
@@ -22,7 +24,7 @@ add_executable(test_usb_control test_usb_control.c ../App/control/usb_control.c 
 target_include_directories(test_usb_control PRIVATE stubs ../App/control)
 
 foreach(target test_awg test_awg_refill test_protocol test_usb_control test_scope_trigger
-        test_logic_trigger test_ownership test_probe_divider)
+        test_logic_trigger test_ownership test_probe_divider test_mixed_policy)
     target_compile_features(${target} PRIVATE c_std_11)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX)
@@ -43,3 +45,4 @@ add_test(NAME scope_trigger COMMAND test_scope_trigger)
 add_test(NAME logic_trigger COMMAND test_logic_trigger)
 add_test(NAME ownership COMMAND test_ownership)
 add_test(NAME probe_divider COMMAND test_probe_divider)
+add_test(NAME mixed_policy COMMAND test_mixed_policy)

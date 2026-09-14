@@ -5,9 +5,12 @@
 #include <stdint.h>
 
 /* The scope and the logic analyzer use different DMA streams but both master DMA2 and
- * compete for the same bus. Running them together would perturb sample timing in a way
- * neither can detect, so exactly one may hold the acquisition hardware at a time and the
- * loser is told so rather than silently interfering.
+ * compete for the same bus. Running them together uncoordinated would perturb sample
+ * timing in a way neither can detect, so exactly one claimant holds the acquisition
+ * hardware at a time and the loser is told so rather than silently interfering.
+ *
+ * Mixed capture is the coordinated case: it claims both at once under a single owner,
+ * starts them from one timer event, and reports the skew rather than assuming none.
  *
  * These functions carry no locking of their own. Callers span the control and
  * acquisition tasks, so every call must be made inside a critical section. */
@@ -15,7 +18,8 @@
 typedef enum {
     ACQUISITION_NONE,
     ACQUISITION_SCOPE,
-    ACQUISITION_LOGIC
+    ACQUISITION_LOGIC,
+    ACQUISITION_MIXED
 } acquisition_owner_t;
 
 typedef struct {

@@ -19,6 +19,7 @@ from stm32_msi.instrument import (
     DeviceStatus,
     LogicCapture,
     LogicStatus,
+    MixedStatus,
     ScopeStatus,
     Status,
 )
@@ -32,6 +33,8 @@ class FakeSession(QObject):
     logic_status_changed = Signal(object)
     logic_capture_ready = Signal(object)
     device_status_changed = Signal(object)
+    mixed_status_changed = Signal(object)
+    mixed_capture_ready = Signal(object)
     disconnected = Signal()
     error = Signal(str)
     busy_changed = Signal(bool)
@@ -75,6 +78,15 @@ class FakeSession(QObject):
 
     def read_logic_capture(self, status, rearm_config=None):
         self.calls.append(("read_logic_capture", status, rearm_config))
+
+    def arm_mixed(self, triggered_by):
+        self.calls.append(("arm_mixed", triggered_by))
+
+    def stop_mixed(self):
+        self.calls.append(("stop_mixed",))
+
+    def read_mixed_capture(self):
+        self.calls.append(("read_mixed_capture",))
 
     def shutdown(self):
         self.calls.append(("shutdown",))
@@ -609,3 +621,116 @@ def test_hiding_a_channel_before_any_capture_is_safe(app):
         assert not view.scope.channel_1_curve.isVisible()
     finally:
         view.close()
+
+
+def test_mixed_capture_draws_both_streams_on_one_axis(window, app):
+    view, session = window
+    connect(view, session, app)
+    panel = view.mixed
+
+    session.mixed_status_changed.emit(MixedStatus(1, 1, 0, 0, 0, 0))
+    app.processEvents()
+    assert "Armed" in panel.state_label.text()
+    assert "logic" in panel.state_label.text()
+
+    complete = MixedStatus(2, 1, 5, 2, 7, 9)
+    session.mixed_status_changed.emit(complete)
+    app.processEvents()
+    assert session.calls[-1] == ("read_mixed_capture",)
+    assert "restarts 2" in panel.state_label.text()
+
+    scope_status = ScopeStatus(2, 1_000_000, 4, 2, 7, 0, 0, 0, 100)
+    logic_status = LogicStatus(2, 10_000_000, 9_882_352, 8, 0, 9, 0, 0, 0, 0)
+    analog = Capture(scope_status, (0, 1024, 2048, 4095), (4095, 2048, 1024, 0))
+    digital = LogicCapture(logic_status, (0, 1, 0, 1, 0, 1, 0, 1))
+    session.mixed_capture_ready.emit((analog, digital, scope_status, logic_status))
+    app.processEvents()
+
+    assert panel.channel_1_curve.xData.size == 4
+    assert panel.traces[0].xData.size == 2 * 8 - 1
+    # The scope window starts 100 samples after the shared start, at 1 MS/s, and zero is
+    # the logic trigger. Each stream's first sample is one of its own periods after the
+    # release, so the two are offset by 1 us - 1/9.88 MS/s on top of the window origin.
+    expected = (100 + 1) / 1e6 - (0 + 1 + 0) / 9_882_352
+    assert panel.channel_1_curve.xData[0] == pytest.approx(expected * 1e6, abs=1e-6)
+    # Linked axes mean one timeline, not two drawn side by side.
+    assert panel.digital_plot.getViewBox().linkedView(0) is panel.analog_plot.getViewBox()
+
+
+def test_the_other_panels_leave_a_mixed_capture_alone(window, app):
+    """A scope or logic read ends by stopping that stream, and the device answers an idle
+    stream by restarting the pair, so acting on their status during a mixed capture tears
+    it down before it can be drawn. Observed on hardware as a climbing restart count with
+    the samples arriving in the wrong two tabs."""
+    view, session = window
+    connect(view, session, app)
+    session.mixed_status_changed.emit(MixedStatus(1, 1, 0, 0, 0, 0))
+    app.processEvents()
+    session.calls.clear()
+
+    # The routine poll reports both streams complete while mixed owns the hardware.
+    session.device_status_changed.emit(
+        device_status(owner=3, scope_state=2, logic_state=2,
+                      scope_capture_id=4, logic_capture_id=4)
+    )
+    app.processEvents()
+
+    stolen = [call for call in session.calls
+              if call[0] in ("read_capture", "read_logic_capture", "stop_scope", "stop_logic")]
+    assert stolen == []
+
+    # With mixed out of the way the same status is read normally.
+    session.calls.clear()
+    session.device_status_changed.emit(
+        device_status(owner=1, scope_state=2, scope_capture_id=5)
+    )
+    app.processEvents()
+    assert any(call[0] == "read_capture" for call in session.calls)
+
+
+def test_a_failed_mixed_read_does_not_wedge_the_panel(window, app):
+    view, session = window
+    connect(view, session, app)
+    session.mixed_status_changed.emit(MixedStatus(2, 1, 1, 0, 1, 1))
+    app.processEvents()
+    assert ("read_mixed_capture",) in session.calls
+
+    # The transfer flag guards against overlapping reads; an error has to clear it or the
+    # panel can never read again.
+    session.error.emit("capture is no longer available")
+    app.processEvents()
+    session.calls.clear()
+    session.mixed_status_changed.emit(MixedStatus(2, 1, 2, 0, 2, 2))
+    app.processEvents()
+    assert ("read_mixed_capture",) in session.calls
+
+
+def test_mixed_reports_when_the_windows_do_not_overlap(window, app):
+    view, session = window
+    connect(view, session, app)
+    session.mixed_status_changed.emit(MixedStatus(2, 0, 1, 0, 1, 1))
+    app.processEvents()
+
+    # A scope window far past the end of a short digital capture.
+    scope_status = ScopeStatus(2, 1_000_000, 4, 0, 1, 0, 0, 0, 50_000)
+    logic_status = LogicStatus(2, 10_000_000, 10_000_000, 8, 0, 1, 0, 0, 0, 0)
+    analog = Capture(scope_status, (0, 1, 2, 3), (0, 1, 2, 3))
+    digital = LogicCapture(logic_status, (0, 1) * 4)
+    session.mixed_capture_ready.emit((analog, digital, scope_status, logic_status))
+    app.processEvents()
+    assert "do not overlap" in view.mixed.overlap_label.text()
+
+
+def test_mixed_arm_is_blocked_while_a_single_subsystem_holds_the_hardware(window, app):
+    view, session = window
+    connect(view, session, app)
+    session.device_status_changed.emit(device_status(owner=1, scope_state=1))
+    app.processEvents()
+    assert not view.mixed.arm.isEnabled()
+
+    session.device_status_changed.emit(device_status())
+    app.processEvents()
+    assert view.mixed.arm.isEnabled()
+
+    view.mixed.arm.click()
+    assert session.calls[-1] == ("arm_mixed", "logic")

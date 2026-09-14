@@ -42,12 +42,14 @@ from .instrument import (
     LogicCapture,
     LogicConfig,
     LogicStatus,
+    MixedStatus,
     ScopeConfig,
     ScopeStatus,
     Status,
 )
 from .logic import channel_bits, decode_i2c, decode_spi, decode_uart
 from .logic import measure as logic_measure
+from .mixed import Stream, align
 from .scope import adc_volts, measure
 from .session import DeviceSession
 
@@ -1087,6 +1089,169 @@ class LogicPanel(QWidget):
         self.stop.setEnabled(connected and not stopping and (live or state in (1, 2, 3)))
 
 
+class MixedPanel(QWidget):
+    """Analog and digital captures drawn against one time axis.
+
+    The two plots are separate because the vertical scales have nothing in common, but
+    their x axes are linked, so panning or zooming either moves both. Zero is the
+    trigger instant of whichever stream carried the trigger.
+    """
+
+    arm_requested = Signal(str)
+    stop_requested = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self._alignment = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        page = QVBoxLayout(self)
+        controls = QGroupBox("Mixed capture")
+        row = QHBoxLayout(controls)
+
+        self.triggered_by = QComboBox()
+        self.triggered_by.addItem("Logic analyzer", "logic")
+        self.triggered_by.addItem("Oscilloscope", "scope")
+        self.triggered_by.setToolTip(
+            "Only one stream may search for an edge. The other free-runs and is placed "
+            "against the shared start, so the device refuses a follower that triggers."
+        )
+        column = QVBoxLayout()
+        column.addWidget(QLabel("Triggered by"))
+        column.addWidget(self.triggered_by)
+        row.addLayout(column)
+
+        self.arm = QPushButton("Single")
+        self.stop = QPushButton("Stop")
+        row.addWidget(self.arm)
+        row.addWidget(self.stop)
+        row.addStretch(1)
+        self.state_label = QLabel("Idle")
+        row.addWidget(self.state_label)
+        page.addWidget(controls)
+
+        self.analog_plot = pg.PlotWidget()
+        self.analog_plot.setLabel("left", "Input (V)")
+        self.analog_plot.showGrid(x=True, y=True, alpha=0.25)
+        self.analog_plot.addLegend()
+        self.channel_1_curve = self.analog_plot.plot(pen=pg.mkPen("#f5c542", width=2), name="CH1")
+        self.channel_2_curve = self.analog_plot.plot(pen=pg.mkPen("#4aa8ff", width=2), name="CH2")
+
+        self.digital_plot = pg.PlotWidget()
+        self.digital_plot.setLabel("bottom", "Time from trigger (µs)")
+        self.digital_plot.setYRange(-0.4, LOGIC_CHANNELS)
+        self.digital_plot.showGrid(x=True, y=False, alpha=0.25)
+        self.digital_plot.getAxis("left").setTicks(
+            [[(channel + 0.35, f"D{channel}") for channel in range(LOGIC_CHANNELS)]]
+        )
+        self.traces = [
+            self.digital_plot.plot(pen=pg.mkPen(pg.intColor(channel, LOGIC_CHANNELS), width=2))
+            for channel in range(LOGIC_CHANNELS)
+        ]
+        # One timeline means one x axis: moving either plot moves the other.
+        self.digital_plot.setXLink(self.analog_plot)
+
+        for plot in (self.analog_plot, self.digital_plot):
+            line = pg.InfiniteLine(0, angle=90, pen=pg.mkPen("#e06666", style=Qt.PenStyle.DashLine))
+            plot.addItem(line)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self.analog_plot)
+        splitter.addWidget(self.digital_plot)
+        splitter.setChildrenCollapsible(False)
+        for index in (0, 1):
+            splitter.setStretchFactor(index, 1)
+        page.addWidget(splitter, 1)
+
+        coverage = QGroupBox("Timeline")
+        grid = QGridLayout(coverage)
+        headings = ("Stream", "Rate", "Covers", "Samples")
+        for column_index, text in enumerate(headings):
+            grid.addWidget(QLabel(text), 0, column_index)
+        self.coverage = []
+        for row_index, name in enumerate(("Analog", "Digital"), 1):
+            grid.addWidget(QLabel(name), row_index, 0)
+            labels = [QLabel("—") for _ in headings[1:]]
+            for column_index, label in enumerate(labels, 1):
+                grid.addWidget(label, row_index, column_index)
+            self.coverage.append(labels)
+        self.overlap_label = QLabel("No capture yet")
+        grid.addWidget(self.overlap_label, 3, 0, 1, len(headings))
+        page.addWidget(coverage)
+
+        self.arm.clicked.connect(lambda: self.arm_requested.emit(self.triggered_by.currentData()))
+        self.stop.clicked.connect(self.stop_requested)
+        self.set_enabled(False, False)
+
+    def apply_status(self, status: MixedStatus) -> None:
+        states = ("Idle", "Armed", "Complete", "Fault")
+        label = states[status.state] if status.state < len(states) else "Unknown"
+        self.state_label.setText(
+            f"{label}, triggered by {status.trigger_name}  |  restarts {status.restarts}"
+        )
+
+    def apply_capture(self, analog, digital, alignment) -> None:
+        """Draw both captures with zero at the trigger instant."""
+        self._alignment = alignment
+        scope, logic = alignment.streams
+        reference = self._reference
+
+        analog_us = alignment.relative(scope) * 1e6
+        for curve, values in zip(
+            (self.channel_1_curve, self.channel_2_curve),
+            (analog.channel_1, analog.channel_2),
+            strict=True,
+        ):
+            curve.setData(analog_us, adc_volts(values, reference))
+
+        digital_us = alignment.relative(logic) * 1e6
+        steps = np.repeat(digital_us, 2)[1:]
+        for channel, curve in enumerate(self.traces):
+            bits = channel_bits(digital.samples, channel)
+            curve.setData(steps, np.repeat(bits * 0.7 + channel, 2)[:-1])
+
+        for labels, stream in zip(self.coverage, (scope, logic), strict=True):
+            labels[0].setText(f"{stream.rate / 1e6:.3f} MS/s")
+            labels[1].setText(
+                f"{(stream.start - alignment.origin) * 1e6:+.2f} to "
+                f"{(stream.end - alignment.origin) * 1e6:+.2f} µs"
+            )
+            labels[2].setText(str(stream.count))
+
+        if alignment.complete:
+            self.overlap_label.setText(
+                f"Both streams cover {alignment.overlap * 1e6:.2f} µs; outside that "
+                "only one stream has data."
+            )
+        else:
+            self.overlap_label.setText(
+                "The two windows do not overlap. Nothing here can be compared across "
+                "streams; shorten the faster capture or slow the other one."
+            )
+        self.analog_plot.setXRange(
+            float(min(analog_us[0], digital_us[0])), float(max(analog_us[-1], digital_us[-1]))
+        )
+
+    _reference = 3.0
+
+    def set_reference(self, volts: float) -> None:
+        self._reference = volts
+
+    def set_enabled(
+        self,
+        connected: bool,
+        busy: bool,
+        state: int = 0,
+        transferring: bool = False,
+        blocked: bool = False,
+    ) -> None:
+        editable = connected and not busy and not transferring and state != 1
+        self.triggered_by.setEnabled(editable)
+        self.arm.setEnabled(editable and not blocked)
+        self.stop.setEnabled(connected and state in (1, 2, 3))
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -1115,6 +1280,9 @@ class MainWindow(QMainWindow):
         self._logic_transfer = False
         self._logic_stopping = False
         self._device_status = None
+        self._mixed_status = None
+        self._mixed_read_id = None
+        self._mixed_transfer = False
 
         self.setWindowTitle("STM32 Mixed-Signal Instrument")
         self.setMinimumSize(1050, 700)
@@ -1177,6 +1345,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.scope, "Oscilloscope")
         self.logic = LogicPanel()
         tabs.addTab(self.logic, "Logic Analyzer")
+        self.mixed = MixedPanel()
+        tabs.addTab(self.mixed, "Mixed Signal")
         page.addWidget(tabs, 1)
 
         self.setCentralWidget(root)
@@ -1238,6 +1408,8 @@ class MainWindow(QMainWindow):
         self.logic.arm_requested.connect(self._arm_logic)
         self.logic.run_requested.connect(self._run_logic)
         self.logic.stop_requested.connect(self._stop_logic)
+        self.mixed.arm_requested.connect(self._arm_mixed)
+        self.mixed.stop_requested.connect(self._stop_mixed)
         self._session.connected.connect(self._on_connected)
         self._session.status_changed.connect(self._on_statuses)
         self._session.scope_status_changed.connect(self._on_scope_status)
@@ -1245,6 +1417,8 @@ class MainWindow(QMainWindow):
         self._session.logic_status_changed.connect(self._on_logic_status)
         self._session.logic_capture_ready.connect(self._on_logic_capture)
         self._session.device_status_changed.connect(self._on_device_status)
+        self._session.mixed_status_changed.connect(self._on_mixed_status)
+        self._session.mixed_capture_ready.connect(self._on_mixed_capture)
         self._session.disconnected.connect(self._on_disconnected)
         self._session.error.connect(self._on_error)
         self._session.busy_changed.connect(self._set_busy)
@@ -1363,6 +1537,56 @@ class MainWindow(QMainWindow):
         self._set_busy(True)
         self._session.stop_logic()
 
+    def _arm_mixed(self, triggered_by: str) -> None:
+        self._mixed_read_id = None
+        self._set_busy(True)
+        self._session.arm_mixed(triggered_by)
+
+    def _stop_mixed(self) -> None:
+        self._set_busy(True)
+        self._session.stop_mixed()
+
+    def _on_mixed_status(self, status: MixedStatus) -> None:
+        self._mixed_status = status
+        self.mixed.apply_status(status)
+        if (
+            status.state == 2
+            and status.capture_id != self._mixed_read_id
+            and not self._busy
+            and not self._mixed_transfer
+        ):
+            self._mixed_read_id = status.capture_id
+            self._mixed_transfer = True
+            self._session.read_mixed_capture()
+        self._update_controls()
+
+    def _on_mixed_capture(self, payload) -> None:
+        """Both captures plus the statuses that place them on the timeline."""
+        self._mixed_transfer = False
+        analog, digital, scope_status, logic_status = payload
+        streams = [
+            Stream(
+                "scope",
+                scope_status.sample_rate,
+                scope_status.window_origin,
+                scope_status.trigger_index,
+                len(analog.channel_1),
+            ),
+            Stream(
+                "logic",
+                logic_status.actual_rate,
+                logic_status.window_origin,
+                logic_status.trigger_index,
+                len(digital.samples),
+            ),
+        ]
+        triggered = self._mixed_status.trigger_name if self._mixed_status else "logic"
+        self.mixed.set_reference(self.scope.reference.value())
+        self.mixed.apply_capture(analog, digital, align(streams, triggered=triggered))
+        self.statusBar().showMessage(
+            f"Mixed capture {self._mixed_status.capture_id if self._mixed_status else 0} received"
+        )
+
     def _poll(self) -> None:
         if self._connected and not self._busy and not self._polling:
             self._polling = True
@@ -1406,6 +1630,7 @@ class MainWindow(QMainWindow):
             and status.capture_id != self._capture_read_id
             and not self._busy
             and not self._scope_transfer
+            and not self._owned_by("mixed")
         ):
             self._capture_read_id = status.capture_id
             self._scope_transfer = True
@@ -1431,6 +1656,7 @@ class MainWindow(QMainWindow):
             and status.capture_id != self._logic_read_id
             and not self._busy
             and not self._logic_transfer
+            and not self._owned_by("mixed")
         ):
             self._logic_read_id = status.capture_id
             self._logic_transfer = True
@@ -1459,6 +1685,10 @@ class MainWindow(QMainWindow):
         if status.conflicts:
             owner += f" ({status.conflicts} refused)"
         self.acquisition_label.setText(owner)
+        # Both panels see the stream state so they can display it, but neither may act on
+        # it while mixed capture owns the hardware: their own read finishes by stopping the
+        # stream, the device answers an idle stream by restarting the pair, and the mixed
+        # capture is torn down before it can be read.
         self._on_scope_status(status.scope_status(self._scope_config or self.scope.config()))
         self._on_logic_status(status.logic_status(self._logic_config or self.logic.config()))
 
@@ -1495,6 +1725,9 @@ class MainWindow(QMainWindow):
         self._logic_transfer = False
         self._logic_stopping = False
         self._device_status = None
+        self._mixed_status = None
+        self._mixed_read_id = None
+        self._mixed_transfer = False
         self._poll_timer.stop()
         self.connection_label.setText("Disconnected")
         self.connect_button.setText("Connect")
@@ -1510,6 +1743,7 @@ class MainWindow(QMainWindow):
         self._set_logic_live(False)
         self._logic_transfer = False
         self._logic_stopping = False
+        self._mixed_transfer = False
         self.statusBar().showMessage(f"Error: {message}")
 
     def _owned_by(self, other: str) -> bool:
@@ -1556,6 +1790,14 @@ class MainWindow(QMainWindow):
             self._scope_transfer,
             self._scope_stopping,
             self._owned_by("logic"),
+        )
+        mixed_state = self._mixed_status.state if self._mixed_status else 0
+        self.mixed.set_enabled(
+            self._connected,
+            self._busy,
+            mixed_state,
+            self._mixed_transfer,
+            self._owned_by("scope") or self._owned_by("logic"),
         )
         logic_state = self._logic_status.state if self._logic_status else 0
         self.logic.set_enabled(

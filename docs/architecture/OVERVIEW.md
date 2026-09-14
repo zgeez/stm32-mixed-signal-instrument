@@ -85,6 +85,11 @@ UI -> instrument model -> protocol -> serial transport. A Qt worker handles USB;
 computes measurements and UART/SPI/I2C decoding. The live scope view appends finite captures
 on a cumulative time axis, excluding transfer gaps.
 
+One workspace, not a tab per peripheral: both outputs and the PC6 reference stay visible
+while a single display switches between analog, digital and both on one timeline. A combined
+capture sends its own acquisition settings with the arm, so it no longer depends on the other
+views having been run first. Settings chosen once and the error counters sit behind Advanced.
+
 ## References
 
 - [RM0090: reference manual](https://www.st.com/resource/en/reference_manual/rm0090-stm32f407-advanced-armbased-32bit-mcus-stmicroelectronics.pdf): bus topology, DMA request tables, ADC/DAC and timers.

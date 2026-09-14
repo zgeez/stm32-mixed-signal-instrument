@@ -79,8 +79,11 @@ class FakeSession(QObject):
     def read_logic_capture(self, status, rearm_config=None):
         self.calls.append(("read_logic_capture", status, rearm_config))
 
-    def arm_mixed(self, triggered_by):
-        self.calls.append(("arm_mixed", triggered_by))
+    def arm_mixed(self, triggered_by, scope_config=None, logic_config=None):
+        self.calls.append(("arm_mixed", triggered_by, scope_config, logic_config))
+
+    def configure_probe(self, frequency_hz, duty_percent=50.0):
+        self.calls.append(("configure_probe", frequency_hz, duty_percent))
 
     def stop_mixed(self):
         self.calls.append(("stop_mixed",))
@@ -705,6 +708,52 @@ def test_a_failed_mixed_read_does_not_wedge_the_panel(window, app):
     assert ("read_mixed_capture",) in session.calls
 
 
+def test_the_reference_output_reaches_the_device(window, app):
+    """The TIM3 square wave was firmware-only until now, reachable only from a script."""
+    view, session = window
+    connect(view, session, app)
+    session.calls.clear()
+
+    view.reference_output.frequency.setValue(250_000)
+    view.reference_output.enabled.setChecked(True)
+    app.processEvents()
+    sent = [call for call in session.calls if call[0] == "configure_probe"]
+    assert sent and sent[-1][1] == 250_000
+    assert view.reference_output.enabled.text() == "Output on"
+
+    # Zero is how the device is told to stop, so off needs no separate command.
+    view.reference_output.enabled.setChecked(False)
+    app.processEvents()
+    assert [call for call in session.calls if call[0] == "configure_probe"][-1][1] == 0
+
+
+def test_switching_the_display_stops_a_live_capture_behind_it(window, app):
+    """A view the user has left should not keep claiming the acquisition hardware."""
+    view, session = window
+    connect(view, session, app)
+    view.scope.run.click()
+    app.processEvents()
+    assert view._scope_live
+
+    session.calls.clear()
+    view.display.set_mode("logic")
+    view.display.mode_changed.emit("logic")
+    app.processEvents()
+    assert not view._scope_live
+    assert ("stop_scope",) in session.calls
+
+
+def test_the_demoted_settings_live_in_the_advanced_panel(window, app):
+    """Set-once and diagnostic controls belong out of the way, not in the capture rows."""
+    view, _session = window
+    for widget in (view.scope.reference, view.scope.scope_counts, view.logic.logic_counts):
+        assert view.advanced.isAncestorOf(widget)
+    for combo in view.logic.pattern:
+        assert view.advanced.isAncestorOf(combo)
+    # Still readable where the panel needs them, which is what keeps the config correct.
+    assert view.scope.config().trigger_level == round(1.5 * 4095 / view.scope.reference.value())
+
+
 def test_mixed_reports_when_the_windows_do_not_overlap(window, app):
     view, session = window
     connect(view, session, app)
@@ -733,4 +782,10 @@ def test_mixed_arm_is_blocked_while_a_single_subsystem_holds_the_hardware(window
     assert view.mixed.arm.isEnabled()
 
     view.mixed.arm.click()
-    assert session.calls[-1] == ("arm_mixed", "logic")
+    # The arm carries its own configuration, so the combined view no longer depends on
+    # the analog and digital views having been run first.
+    name, triggered, scope_config, logic_config = session.calls[-1]
+    assert (name, triggered) == ("arm_mixed", "logic")
+    assert scope_config is not None and logic_config is not None
+    assert scope_config.trigger_edge == 0, "the follower must be forced to free-run"
+    assert logic_config == view.logic.config(), "the leader passes through untouched"

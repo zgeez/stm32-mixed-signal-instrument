@@ -161,12 +161,23 @@ class _DeviceWorker(QObject):
             if isinstance(exc, OSError):
                 self._close(True)
 
-    @Slot(str)
-    def arm_mixed(self, triggered_by) -> None:
+    @Slot(str, object, object)
+    def arm_mixed(self, triggered_by, scope_config=None, logic_config=None) -> None:
         def arm(device):
+            # Carrying the configuration here is what lets a mixed capture stand on its
+            # own. Sending only the arm made it depend on whatever the scope and logic
+            # views happened to have pushed earlier, which is invisible to the user.
+            if scope_config is not None:
+                device.configure_scope(scope_config)
+            if logic_config is not None:
+                device.configure_logic(logic_config)
             device.arm_mixed(triggered_by)
 
         self._run(arm)
+
+    @Slot(float, float)
+    def configure_probe(self, frequency_hz, duty_percent) -> None:
+        self._run(lambda device: device.configure_probe(int(frequency_hz), duty_percent))
 
     @Slot()
     def stop_mixed(self) -> None:
@@ -294,7 +305,8 @@ class DeviceSession(QObject):
     _arm_logic_requested = Signal(object)
     _stop_logic_requested = Signal()
     _read_logic_capture_requested = Signal(object, object)
-    _arm_mixed_requested = Signal(str)
+    _arm_mixed_requested = Signal(str, object, object)
+    _configure_probe_requested = Signal(float, float)
     _stop_mixed_requested = Signal()
     _read_mixed_requested = Signal()
 
@@ -317,6 +329,7 @@ class DeviceSession(QObject):
         self._stop_logic_requested.connect(self._worker.stop_logic)
         self._read_logic_capture_requested.connect(self._worker.read_logic_capture)
         self._arm_mixed_requested.connect(self._worker.arm_mixed)
+        self._configure_probe_requested.connect(self._worker.configure_probe)
         self._stop_mixed_requested.connect(self._worker.stop_mixed)
         self._read_mixed_requested.connect(self._worker.read_mixed_capture)
         self._worker.connected.connect(self.connected)
@@ -387,8 +400,11 @@ class DeviceSession(QObject):
     def read_logic_capture(self, status, rearm_config=None) -> None:
         self._read_logic_capture_requested.emit(status, rearm_config)
 
-    def arm_mixed(self, triggered_by: str) -> None:
-        self._arm_mixed_requested.emit(triggered_by)
+    def arm_mixed(self, triggered_by: str, scope_config=None, logic_config=None) -> None:
+        self._arm_mixed_requested.emit(triggered_by, scope_config, logic_config)
+
+    def configure_probe(self, frequency_hz: float, duty_percent: float = 50.0) -> None:
+        self._configure_probe_requested.emit(frequency_hz, duty_percent)
 
     def stop_mixed(self) -> None:
         self._stop_mixed_requested.emit()

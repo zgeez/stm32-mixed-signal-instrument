@@ -3,16 +3,18 @@
 import re
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDial,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -25,8 +27,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -230,12 +232,17 @@ class OutputPanel(QGroupBox):
         self.offset_dial = self._dial(0, 1000, 500, 10, 1)
         self.phase_dial = self._dial(0, 3599, 0, 10, 1, wrapping=True)
 
-        knobs = QHBoxLayout()
-        for title, dial in (
-            ("Frequency", self.frequency_dial),
-            ("Amplitude", self.amplitude_dial),
-            ("Offset", self.offset_dial),
-            ("Phase", self.phase_dial),
+        # Two by two rather than a row of four: the panel now lives in a tall, narrow
+        # column beside the display, and a single row forced that column wide enough to
+        # crowd out the thing it is meant to sit next to.
+        knobs = QGridLayout()
+        for index, (title, dial) in enumerate(
+            (
+                ("Frequency", self.frequency_dial),
+                ("Amplitude", self.amplitude_dial),
+                ("Offset", self.offset_dial),
+                ("Phase", self.phase_dial),
+            )
         ):
             column = QVBoxLayout()
             column.setSpacing(2)
@@ -243,7 +250,7 @@ class OutputPanel(QGroupBox):
             label = QLabel(title)
             label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
             column.addWidget(label)
-            knobs.addLayout(column)
+            knobs.addLayout(column, index // 2, index % 2)
         layout.addLayout(knobs)
 
         table_row = QHBoxLayout()
@@ -287,7 +294,7 @@ class OutputPanel(QGroupBox):
         dial.setNotchesVisible(True)
         dial.setNotchTarget(7)
         dial.setWrapping(wrapping)
-        dial.setFixedSize(76, 76)
+        dial.setFixedSize(58, 58)
         dial.setToolTip("Hold Shift for fine control")
         return dial
 
@@ -436,7 +443,6 @@ class ScopePanel(QWidget):
             ("Edge", self.trigger_edge),
             ("Level", self.trigger_level),
             ("Pretrigger", self.pretrigger),
-            ("VDDA", self.reference),
         ):
             column = QVBoxLayout()
             column.addWidget(QLabel(label))
@@ -521,6 +527,10 @@ class ScopePanel(QWidget):
         page.addWidget(display)
 
         self.plot = pg.PlotWidget()
+        # The unit is already in the label text, so pyqtgraph's own prefixing has
+        # nothing to rename and shows a bare multiplier such as (x0.001) instead.
+        for edge in ("bottom", "left"):
+            self.plot.getAxis(edge).enableAutoSIPrefix(False)
         self.plot.setLabel("bottom", "Time (ms)")
         self.plot.setLabel("left", "Input (V)")
         self.plot.showGrid(x=True, y=True, alpha=0.25)
@@ -551,7 +561,6 @@ class ScopePanel(QWidget):
         self.scope_state = QLabel("Idle")
         self.scope_counts = QLabel("Trigger misses 0  |  Overruns 0  |  DMA errors 0")
         grid.addWidget(self.scope_state, 3, 0, 1, 2)
-        grid.addWidget(self.scope_counts, 3, 2, 1, 6)
         page.addWidget(summary)
 
         self.arm.clicked.connect(self._arm)
@@ -823,10 +832,8 @@ class LogicPanel(QWidget):
             column.addWidget(widget)
             row.addLayout(column)
 
-        pattern_column = QVBoxLayout()
-        pattern_column.addWidget(QLabel("Pattern D7..D0"))
-        pattern_row = QHBoxLayout()
-        pattern_row.setSpacing(2)
+        # Built but not placed here: the advanced panel adopts these, because a masked
+        # pattern is a rare choice and eight combo boxes crowd out the common ones.
         self.pattern = []
         for channel in range(LOGIC_CHANNELS):
             combo = QComboBox()
@@ -836,10 +843,6 @@ class LogicPanel(QWidget):
             combo.setFixedWidth(52)
             combo.setToolTip(f"D{channel} ({self.PINS[channel]})")
             self.pattern.append(combo)
-        for combo in reversed(self.pattern):
-            pattern_row.addWidget(combo)
-        pattern_column.addLayout(pattern_row)
-        row.addLayout(pattern_column)
 
         self.arm = QPushButton("Single")
         self.run = QPushButton("Run")
@@ -851,6 +854,7 @@ class LogicPanel(QWidget):
         page.addWidget(controls)
 
         self.plot = pg.PlotWidget()
+        self.plot.getAxis("bottom").enableAutoSIPrefix(False)
         self.plot.setLabel("bottom", "Time (µs)")
         self.plot.setYRange(-0.4, LOGIC_CHANNELS)
         self.plot.showGrid(x=True, y=False, alpha=0.25)
@@ -928,7 +932,6 @@ class LogicPanel(QWidget):
         self.logic_state = QLabel("Idle")
         self.logic_counts = QLabel("Trigger misses 0  |  Overruns 0  |  DMA errors 0")
         grid.addWidget(self.logic_state, LOGIC_CHANNELS + 1, 0)
-        grid.addWidget(self.logic_counts, LOGIC_CHANNELS + 1, 1, 1, len(headings) - 1)
 
         # Eight channels of readout are taller than the traces they describe. Scrolling
         # the readout lets the plot keep its height on a short window, and the splitter
@@ -1132,6 +1135,7 @@ class MixedPanel(QWidget):
         page.addWidget(controls)
 
         self.analog_plot = pg.PlotWidget()
+        self.analog_plot.getAxis("left").enableAutoSIPrefix(False)
         self.analog_plot.setLabel("left", "Input (V)")
         self.analog_plot.showGrid(x=True, y=True, alpha=0.25)
         self.analog_plot.addLegend()
@@ -1139,6 +1143,8 @@ class MixedPanel(QWidget):
         self.channel_2_curve = self.analog_plot.plot(pen=pg.mkPen("#4aa8ff", width=2), name="CH2")
 
         self.digital_plot = pg.PlotWidget()
+        self.digital_plot.getAxis("bottom").enableAutoSIPrefix(False)
+        self.analog_plot.getAxis("bottom").enableAutoSIPrefix(False)
         self.digital_plot.setLabel("bottom", "Time from trigger (µs)")
         self.digital_plot.setYRange(-0.4, LOGIC_CHANNELS)
         self.digital_plot.showGrid(x=True, y=False, alpha=0.25)
@@ -1252,6 +1258,193 @@ class MixedPanel(QWidget):
         self.stop.setEnabled(connected and state in (1, 2, 3))
 
 
+class ReferenceOutput(QGroupBox):
+    """The TIM3 square wave on PC6.
+
+    It exists in the firmware and reaches far past the 20 kHz the DAC can manage, which
+    makes it the only on-board source fast enough to exercise the logic inputs near their
+    limit. It was previously reachable only from a script.
+    """
+
+    changed = Signal(float, float)
+
+    def __init__(self):
+        super().__init__("Reference output — PC6")
+        layout = QFormLayout(self)
+        self.frequency = QDoubleSpinBox()
+        self.frequency.setRange(1, 42_000_000)
+        self.frequency.setDecimals(0)
+        self.frequency.setValue(100_000)
+        self.frequency.setSuffix(" Hz")
+        self.frequency.setToolTip("A square wave for probing the logic inputs, 1 Hz to 42 MHz")
+        self.duty = QDoubleSpinBox()
+        self.duty.setRange(1, 99)
+        self.duty.setValue(50)
+        self.duty.setSuffix(" %")
+        self.enabled = QPushButton("Output off")
+        self.enabled.setCheckable(True)
+        self.actual = QLabel("—")
+        layout.addRow("Frequency", self.frequency)
+        layout.addRow("Duty", self.duty)
+        layout.addRow("Actual", self.actual)
+        layout.addRow(self.enabled)
+
+        self.enabled.toggled.connect(self._toggled)
+        self.frequency.valueChanged.connect(self._emit)
+        self.duty.valueChanged.connect(self._emit)
+
+    def _toggled(self, on: bool) -> None:
+        self.enabled.setText("Output on" if on else "Output off")
+        self._emit()
+
+    def _emit(self) -> None:
+        # Zero is how the device is told to stop, so the off state needs no second command.
+        hz = self.frequency.value() if self.enabled.isChecked() else 0.0
+        self.changed.emit(hz, self.duty.value())
+
+    def apply_status(self, actual_hz) -> None:
+        self.actual.setText(f"{actual_hz:,.0f} Hz" if actual_hz else "—")
+
+    def set_editable(self, editable: bool) -> None:
+        for widget in (self.frequency, self.duty, self.enabled):
+            widget.setEnabled(editable)
+
+
+class SourceColumn(QWidget):
+    """Everything the board can drive, in one place that stays visible.
+
+    Sources sit beside the display rather than behind a tab because a bench session is
+    almost always "change the source, look at the result". Switching views to do that
+    hides the very thing being changed.
+    """
+
+    def __init__(self, outputs, reference):
+        super().__init__()
+        page = QVBoxLayout(self)
+        page.setContentsMargins(0, 0, 0, 0)
+        for panel in outputs:
+            page.addWidget(panel)
+        page.addWidget(reference)
+        page.addStretch(1)
+
+
+class DisplayColumn(QWidget):
+    """One display, with a selector for what is on it.
+
+    Analog, digital and both are three ways of looking at the same instant, not three
+    instruments, so they share a pane instead of each owning a tab.
+    """
+
+    mode_changed = Signal(str)
+
+    MODES = (
+        ("Analog", "scope", "Two analog inputs on PC4 and PC5"),
+        ("Digital", "logic", "Eight logic inputs on PE7 to PE14"),
+        ("Both", "mixed", "Analog and digital on one timeline"),
+    )
+
+    def __init__(self, scope, logic, mixed):
+        super().__init__()
+        page = QVBoxLayout(self)
+        page.setContentsMargins(0, 0, 0, 0)
+
+        chooser = QHBoxLayout()
+        chooser.setSpacing(0)
+        self.buttons = QButtonGroup(self)
+        self.buttons.setExclusive(True)
+        for index, (label, mode, tip) in enumerate(self.MODES):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setToolTip(tip)
+            button.setObjectName("mode")
+            button.setChecked(index == 0)
+            self.buttons.addButton(button, index)
+            chooser.addWidget(button)
+        chooser.addStretch(1)
+        page.addLayout(chooser)
+
+        self.stack = QStackedWidget()
+        for widget in (scope, logic, mixed):
+            self.stack.addWidget(widget)
+        page.addWidget(self.stack, 1)
+
+        self.buttons.idClicked.connect(self._choose)
+
+    def _choose(self, index: int) -> None:
+        self.stack.setCurrentIndex(index)
+        self.mode_changed.emit(self.MODES[index][1])
+
+    def mode(self) -> str:
+        return self.MODES[self.stack.currentIndex()][1]
+
+    def set_mode(self, mode: str) -> None:
+        for index, (_, name, _tip) in enumerate(self.MODES):
+            if name == mode:
+                self.buttons.button(index).setChecked(True)
+                self.stack.setCurrentIndex(index)
+                return
+
+
+class AdvancedDialog(QDialog):
+    """Settings that are chosen once, and counters read only when something looks wrong.
+
+    Keeping these out of the main view is the point: a supply reference is set when the
+    board is first measured, a masked pattern is a rare trigger, and an error counter is
+    worth reading when a capture looks wrong rather than continuously.
+    """
+
+    def __init__(self, scope, logic, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Advanced")
+        page = QVBoxLayout(self)
+
+        supply = QGroupBox("Supply reference")
+        supply_form = QFormLayout(supply)
+        supply_form.addRow("VDDA", scope.reference)
+        note = QLabel("Every voltage is relative to this. Measure it once and enter it.")
+        note.setObjectName("hint")
+        note.setWordWrap(True)
+        supply_form.addRow(note)
+        page.addWidget(supply)
+
+        pattern = QGroupBox("Logic pattern trigger")
+        pattern_layout = QVBoxLayout(pattern)
+        row = QHBoxLayout()
+        row.setSpacing(2)
+        row.addWidget(QLabel("D7"))
+        for combo in reversed(logic.pattern):
+            row.addWidget(combo)
+        row.addWidget(QLabel("D0"))
+        row.addStretch(1)
+        pattern_layout.addLayout(row)
+        pattern_note = QLabel(
+            'Used when the digital trigger is set to "Pattern". X ignores a channel.'
+        )
+        pattern_note.setObjectName("hint")
+        pattern_note.setWordWrap(True)
+        pattern_layout.addWidget(pattern_note)
+        page.addWidget(pattern)
+
+        counters = QGroupBox("Error counters")
+        counter_form = QFormLayout(counters)
+        self.underrun_label = QLabel("—")
+        self.dma_error_label = QLabel("—")
+        self.refill_miss_label = QLabel("—")
+        counter_form.addRow("AWG underruns", self.underrun_label)
+        counter_form.addRow("AWG DMA errors", self.dma_error_label)
+        counter_form.addRow("Refill misses", self.refill_miss_label)
+        counter_form.addRow("Analog", scope.scope_counts)
+        counter_form.addRow("Digital", logic.logic_counts)
+        page.addWidget(counters)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        buttons.addWidget(close)
+        page.addLayout(buttons)
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -1298,105 +1491,109 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget()
         page = QVBoxLayout(root)
-        page.setContentsMargins(20, 16, 20, 16)
-        page.setSpacing(12)
+        page.setContentsMargins(16, 12, 16, 12)
+        page.setSpacing(10)
+        page.addLayout(self._build_connection_bar())
 
-        title = QLabel("STM32 Mixed-Signal Instrument")
-        title.setObjectName("title")
-        page.addWidget(title)
-
-        connection = QGroupBox("Connection")
-        connection_layout = QHBoxLayout(connection)
-        self.port_combo = QComboBox()
-        self.port_combo.setMinimumWidth(320)
-        self.refresh_button = QPushButton("Refresh")
-        self.connect_button = QPushButton("Connect")
-        connection_layout.addWidget(self.port_combo, 1)
-        connection_layout.addWidget(self.refresh_button)
-        connection_layout.addWidget(self.connect_button)
-        page.addWidget(connection)
-
-        tabs = QTabWidget()
-        awg_page = QWidget()
-        awg_layout = QVBoxLayout(awg_page)
         self.outputs = [OutputPanel(0, "PA4"), OutputPanel(1, "PA5")]
-        output_row = QHBoxLayout()
-        output_row.setSpacing(12)
-        for panel in self.outputs:
-            output_row.addWidget(panel, 1)
-        awg_layout.addLayout(output_row, 1)
-
-        hint = QLabel("Hold Shift while dragging a knob for fine control")
-        hint.setObjectName("hint")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        awg_layout.addWidget(hint)
-
-        actions = QHBoxLayout()
-        actions.addStretch()
+        self.reference_output = ReferenceOutput()
+        self.source = SourceColumn(self.outputs, self.reference_output)
         self.start_button = QPushButton("Start")
         self.stop_button = QPushButton("Stop")
-        actions.addWidget(self.start_button)
-        actions.addWidget(self.stop_button)
-        actions.addStretch()
-        awg_layout.addLayout(actions)
-        awg_layout.addWidget(self._build_status_panel())
-        tabs.addTab(awg_page, "Waveform Generator")
+
         self.scope = ScopePanel()
-        tabs.addTab(self.scope, "Oscilloscope")
         self.logic = LogicPanel()
-        tabs.addTab(self.logic, "Logic Analyzer")
         self.mixed = MixedPanel()
-        tabs.addTab(self.mixed, "Mixed Signal")
-        page.addWidget(tabs, 1)
+        self.display = DisplayColumn(self.scope, self.logic, self.mixed)
+        self.advanced = AdvancedDialog(self.scope, self.logic, self)
+        # The counters moved into the advanced panel; the handlers still address them here.
+        self.underrun_label = self.advanced.underrun_label
+        self.dma_error_label = self.advanced.dma_error_label
+        self.refill_miss_label = self.advanced.refill_miss_label
+
+        # Two output panels with their dials are taller than a short laptop screen, so the
+        # source column scrolls rather than squeezing the display beside it.
+        source_area = QScrollArea()
+        source_area.setWidget(self.source)
+        source_area.setWidgetResizable(True)
+        source_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        source_area.setMinimumWidth(400)
+        source_area.setMaximumWidth(560)
+
+        # Start and Stop sit outside the scroll area. Two output panels with their dials
+        # are taller than the window, and the one control you always need should not be
+        # the one you have to scroll to find.
+        source_side = QWidget()
+        source_layout = QVBoxLayout(source_side)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_layout.addWidget(source_area, 1)
+        actions = QHBoxLayout()
+        actions.addWidget(self.start_button, 1)
+        actions.addWidget(self.stop_button, 1)
+        source_layout.addLayout(actions)
+        hint = QLabel("Shift while dragging a knob for fine control")
+        hint.setObjectName("hint")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        source_layout.addWidget(hint)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.addWidget(source_side)
+        split.addWidget(self.display)
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        split.setChildrenCollapsible(False)
+        # Give the sources enough room that nothing is cut off before the user has
+        # touched the handle; the display takes whatever is left.
+        split.setSizes([440, 880])
+        page.addWidget(split, 1)
 
         self.setCentralWidget(root)
         self.setStatusBar(QStatusBar())
+        for caption, label in (
+            ("Device", self.device_label),
+            ("Output", self.state_label),
+            ("Capture", self.acquisition_label),
+        ):
+            self.statusBar().addPermanentWidget(QLabel(f"{caption}:"))
+            self.statusBar().addPermanentWidget(label)
         self.statusBar().showMessage("Disconnected")
         self.setStyleSheet(
-            "QLabel#title { font-size: 22px; font-weight: 600; }"
             "QLabel#hint { color: #888; }"
             "QGroupBox { font-weight: 600; margin-top: 8px; }"
             "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
             "QPushButton { min-height: 28px; padding: 0 12px; }"
+            "QPushButton#mode { min-width: 96px; padding: 0 18px; }"
+            "QPushButton#mode:checked { font-weight: 600; }"
             "QComboBox, QDoubleSpinBox { min-height: 28px; }"
         )
 
-    def _build_status_panel(self) -> QGroupBox:
-        panel = QGroupBox("Device Status")
-        layout = QGridLayout(panel)
-        headings = (
-            "Device",
-            "Connection",
-            "AWG state",
-            "Acquisition",
-            "Underruns",
-            "DMA errors",
-            "Refill misses",
-        )
-        labels = []
-        for column, heading in enumerate(headings):
-            title = QLabel(heading)
-            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(title, 0, column)
-            value = QLabel("—")
-            value.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(value, 1, column)
-            labels.append(value)
-        (
-            self.device_label,
-            self.connection_label,
-            self.state_label,
-            self.acquisition_label,
-            self.underrun_label,
-            self.dma_error_label,
-            self.refill_miss_label,
-        ) = labels
-        self.connection_label.setText("Disconnected")
-        return panel
+    def _build_connection_bar(self) -> QHBoxLayout:
+        bar = QHBoxLayout()
+        self.port_combo = QComboBox()
+        self.port_combo.setMinimumWidth(260)
+        self.refresh_button = QPushButton("Refresh")
+        self.connect_button = QPushButton("Connect")
+        self.advanced_button = QPushButton("Advanced")
+        self.advanced_button.setToolTip("Supply reference, pattern trigger and error counters")
+        bar.addWidget(self.port_combo, 1)
+        bar.addWidget(self.refresh_button)
+        bar.addWidget(self.connect_button)
+        bar.addSpacing(12)
+        bar.addWidget(self.advanced_button)
+
+        # Read at a glance, so they sit in the status bar rather than taking a row.
+        self.device_label = QLabel("—")
+        self.connection_label = QLabel("Disconnected")
+        self.state_label = QLabel("—")
+        self.acquisition_label = QLabel("—")
+        return bar
 
     def _connect_signals(self) -> None:
         self.refresh_button.clicked.connect(self.refresh_ports)
         self.connect_button.clicked.connect(self._toggle_connection)
+        self.advanced_button.clicked.connect(self.advanced.show)
+        self.reference_output.changed.connect(self._session.configure_probe)
+        self.display.mode_changed.connect(self._on_mode_changed)
         for panel in self.outputs:
             panel.load_requested.connect(self._load_table)
             panel.waveform.currentIndexChanged.connect(self._update_controls)
@@ -1538,9 +1735,33 @@ class MainWindow(QMainWindow):
         self._session.stop_logic()
 
     def _arm_mixed(self, triggered_by: str) -> None:
+        """Send the acquisition settings along with the arm.
+
+        The combined view has no controls of its own; it borrows the analog and digital
+        ones. Sending them here is what lets it stand alone, instead of depending on
+        those views having been run first, which nothing on screen ever said.
+        """
+        scope_config = self.scope.config()
+        logic_config = self.logic.config()
+        # Only the nominated stream may search for an edge. Forcing the follower to
+        # free-run beats letting the device refuse an arm the user cannot diagnose.
+        if triggered_by == "logic":
+            scope_config = replace(scope_config, trigger_edge=0)
+        else:
+            logic_config = replace(logic_config, trigger_mode=0)
         self._mixed_read_id = None
+        self._scope_config = scope_config
+        self._logic_config = logic_config
         self._set_busy(True)
-        self._session.arm_mixed(triggered_by)
+        self._session.arm_mixed(triggered_by, scope_config, logic_config)
+
+    def _on_mode_changed(self, mode: str) -> None:
+        """Leave a capture running in a view the user just left, but stop following it."""
+        if mode != "scope" and self._scope_live:
+            self._stop_scope()
+        if mode != "logic" and self._logic_live:
+            self._stop_logic()
+        self._update_controls()
 
     def _stop_mixed(self) -> None:
         self._set_busy(True)
@@ -1777,6 +1998,7 @@ class MainWindow(QMainWindow):
         self.port_combo.setEnabled(not self._connected and not self._busy)
         self.refresh_button.setEnabled(not self._connected and not self._busy)
         self.connect_button.setEnabled(not self._busy and (self._connected or available))
+        self.reference_output.set_editable(self._connected and not self._busy)
         self.outputs[0].set_editable(editable, extended)
         self.outputs[1].set_editable(editable and extended, extended)
         self.start_button.setEnabled(self._connected and not self._busy and state == 1)

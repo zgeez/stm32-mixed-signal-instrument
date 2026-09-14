@@ -68,9 +68,13 @@ UART/SPI/I2C decoding, mixed-capture alignment and GUI behaviour. The C suites d
 
 ### V-02 Boot, enumeration and GUI
 
-**Method.** Cold boot, CDC enumeration, connect, poll, exercise both capture tabs.
+**Method.** Cold boot, CDC enumeration, connect, poll, exercise every display mode.
 
-**Result.** Four RTOS tasks started. Enumeration, connection, polling and both tabs passed.
+**Result.** Four RTOS tasks started. Enumeration, connection, polling and all three display
+modes passed. Re-checked after the interface was rebuilt around a single workspace: driving
+the application's own widgets against the board, a 10 kHz square on PA5 read Vpp 2.933 V on
+the analog view, the reference output was accepted, and a combined capture completed without
+any other view having been run first.
 LD4 off when idle, slow blink when active.
 
 **Verdict.** Pass.

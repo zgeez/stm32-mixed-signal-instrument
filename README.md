@@ -92,6 +92,13 @@ A shared start is not a shared sampling instant. Measured skew between the two p
 -119.7 ns, which is the ADC's sample-and-hold aperture; no jitter is resolvable above the
 sampling quantization.
 
+## Desktop application
+
+One workspace rather than a tab per peripheral. Both outputs and the PC6 reference output
+stay visible on the left; the display on the right switches between analog, digital and both
+on one timeline. Settings chosen once, the supply reference and the masked pattern trigger,
+and the error counters sit behind Advanced.
+
 ## Concurrency
 
 FreeRTOS separates waveform refill, acquisition, USB control and status.

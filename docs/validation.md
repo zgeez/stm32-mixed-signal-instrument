@@ -15,7 +15,7 @@ Debug firmware unless a record states otherwise.
 
 | ID | Area | Verdict |
 | --- | --- | --- |
-| V-01 | Host test suites and builds | Pass, with deviation D-3 |
+| V-01 | Host test suites and builds | Pass |
 | V-02 | Boot, enumeration and GUI | Pass |
 | V-03 | Acquisition ownership | Pass |
 | V-04 | Scope acquisition | Pass |
@@ -52,7 +52,7 @@ Open defects are listed in section 4, uncharacterized areas in section 5.
 | 5 | 95 | 5 | 36,208 / 53,116 | 36,200 / 29,332 |
 | 6 | 137 | 6 | 56,896 / 55,972 | 56,888 / 31,016 |
 | 7 | 164 | 8 | 75,960 / 75,448 | 75,952 / 41,512 |
-| 8 | 185 | not run (D-3) | 75,984 / 77,144 | 75,976 / 42,312 |
+| 8 | 185 | 9 | 75,984 / 77,144 | 75,976 / 42,312 |
 
 Sizes in bytes. From milestone 7 the image includes a 16 KiB RTOS heap, the TIM3 reference
 output and 1 KiB of cached arbitrary DAC codes.
@@ -65,9 +65,16 @@ output and 1 KiB of cached arbitrary DAC codes.
 
 **Result.** 185 Python tests, Ruff and both builds passed on 2026-09-13. Coverage spans DDS
 and refill maths, protocol framing, USB backpressure, acquisition ownership, measurements,
-UART/SPI/I2C decoding, mixed-capture alignment and GUI behaviour. The C suites did not run.
+UART/SPI/I2C decoding, mixed-capture alignment and GUI behaviour. All nine C suites pass,
+built with MSVC.
 
-**Verdict.** Pass, with deviation D-3.
+D-3 recorded these as unbuildable on this machine. That was wrong: MinGW is broken here, but
+the tests also build under MSVC, which CMakeLists.txt has always had a branch for and which
+the build directory was already configured to use. One toolchain failing was taken for the
+tests failing, and milestones 8 and 9 were recorded as having no C coverage when they could
+have had it.
+
+**Verdict.** Pass.
 
 ### V-02 Boot, enumeration and GUI
 
@@ -469,7 +476,7 @@ tied to the image that produced it.
 | --- | --- | --- | --- |
 | D-1 | Mixed follower's first analog sample invalid at 500 kS/s | Minor | Fixed |
 | D-2 | Historical dual-arbitrary AWG freeze, cause unconfirmed | Major | Open, not reproducing |
-| D-3 | Native C suites cannot be built on the validation machine | Process | Open |
+| D-3 | MinGW on the validation machine compiles nothing | Minor | Open, worked around |
 | D-4 | Control task never woken by the CDC callbacks, 20 ms floor per request | Major | Fixed |
 
 **D-1.** Caused by the ADC DMA stream running in circular mode, which continues writing past
@@ -488,9 +495,9 @@ and a 2048-sample transfer from 3419.7 ms to 39.79 ms. Found by the milestone 9 
 tested and none held; a speculative fix showed no measurable change and was reverted.
 
 **D-3.** MinGW `cc1.exe` exits 127 and compiles nothing, including a bare `int main(void)`.
-The firmware version command was therefore covered by Python tests and board checks only; the
-shared C and Python protocol vectors were not extended, because unverified C is worse than an
-acknowledged gap.
+It is a broken install, not a project fault, and it blocks nothing: the same suites build and
+run under MSVC, and CI builds them with GCC on Ubuntu. Repairing MinGW would remove the
+detour. The lasting cost was the conclusion drawn from it, corrected in V-01.
 The failure predates the milestone 8 changes and is independent of them. Milestone 8 adds no
 host-testable C: its only firmware change is in `scope.c`, which requires the HAL and is
 covered by V-22 instead.

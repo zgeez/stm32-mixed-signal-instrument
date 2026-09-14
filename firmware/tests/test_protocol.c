@@ -7,6 +7,7 @@
 #include "mixed.h"
 #include "probe.h"
 #include "tasks.h"
+#include "version.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -410,9 +411,30 @@ int main(int argc, char **argv)
     CHECK(reply.payload[1] == TASK_COUNT && reply.payload[2] == 100U);
     CHECK(reply.payload[2U + 4U * TASK_COUNT] == 0U);
 
-    frame.command = CMD_MIXED_STATUS + 1U;
+    /* One past the last command, whatever that is. Naming a specific command plus one
+       meant that adding a command turned this case into a valid one, and the rejection it
+       was meant to check stopped being tested. */
+    frame.command = CMD_LIMIT;
+    frame.length = 0U;
     command_execute(&frame, &reply);
     CHECK(reply.payload[0] == REPLY_COMMAND);
+
+    frame.command = CMD_FIRMWARE_VERSION;
+    frame.length = 0U;
+    command_execute(&frame, &reply);
+    {
+        size_t identity = strlen(FIRMWARE_BUILD_ID);
+        if (identity > FIRMWARE_BUILD_ID_MAX) {
+            identity = FIRMWARE_BUILD_ID_MAX;
+        }
+        CHECK(reply.payload[0] == REPLY_OK);
+        CHECK(reply.payload[1] == FIRMWARE_VERSION_MAJOR);
+        CHECK(reply.payload[2] == FIRMWARE_VERSION_MINOR);
+        CHECK(reply.payload[3] == FIRMWARE_VERSION_PATCH);
+        CHECK(reply.payload[4] == PROTOCOL_VERSION);
+        CHECK(reply.payload[5] == (uint8_t)identity);
+        CHECK(reply.length == 6U + identity);
+    }
 
     frame.command = CMD_PROBE_CONFIG;
     frame.length = 6U;

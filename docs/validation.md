@@ -62,16 +62,33 @@ output and 1 KiB of cached arbitrary DAC codes.
 
 ### V-01 Host test suites and builds
 
-**Method.** Python suite, native C suites, Ruff, Debug and Release firmware builds.
+**Method.** Python suite, native C suites, Ruff, Debug and Release firmware builds. The C
+suites are also run a second time instrumented, once under AddressSanitizer and
+UndefinedBehaviorSanitizer and once under gcov.
 
-**Result.** 206 Python tests, Ruff and both firmware builds pass. Coverage spans DDS and
+**Result.** 206 Python tests, Ruff and both firmware builds pass. The suites span DDS and
 refill maths, protocol framing, USB backpressure, acquisition ownership, measurements,
 UART/SPI/I2C decoding, mixed-capture alignment, flashing and GUI behaviour. All nine C suites
 pass under MinGW and under MSVC, and CI builds them with GCC on Ubuntu.
 
-Building them needs the toolchain's own directory on PATH; invoking the compiler by absolute
-path alone leaves it unable to load the libraries it depends on. `testing.md` carries the
-command for each toolchain.
+The application's own firmware sources compile at `-Wall -Wextra -Werror` with no warnings.
+The vendor code underneath is left at the generated settings deliberately: CubeMX rewrites
+`Core/` and `Drivers/` wholesale and FreeRTOS is vendored unchanged, so treating a warning
+there as an error would make the next regeneration a broken build.
+
+| Instrumented pass | Result |
+| --- | --- |
+| ASan and UBSan, all nine suites | No finding. Verified non-vacuous: an injected heap overflow and an injected signed overflow are both caught and fatal. |
+| gcov, application sources only | 92.8% of lines, 100% of functions, 80.5% of branches |
+
+Coverage is quoted for the ten application sources the host suites compile. The six that
+touch hardware directly are not unit tested at all and are excluded rather than counted as
+misses, so the figure describes how well the testable code is tested, not how much of the
+firmware is. Python coverage is 89% of 2,580 statements. CI fails either below 85%.
+
+Building the C suites needs the toolchain's own directory on PATH; invoking the compiler by
+absolute path alone leaves it unable to load the libraries it depends on. `testing.md`
+carries the command for each toolchain.
 
 **Verdict.** Pass.
 

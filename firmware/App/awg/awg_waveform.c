@@ -28,7 +28,9 @@ static void prepare_sine_table(void)
 
 bool awg_config_valid(const awg_config_t *config, uint16_t arbitrary_length)
 {
-    if (config == NULL || config->waveform < AWG_SINE || config->waveform >= AWG_WAVEFORM_COUNT ||
+    /* No lower bound on the waveform: every enumerator is non-negative, so the type is
+       unsigned and nothing below AWG_SINE can be represented in it. */
+    if (config == NULL || config->waveform >= AWG_WAVEFORM_COUNT ||
         config->frequency_millihz < AWG_MIN_MILLIHZ ||
         config->frequency_millihz > AWG_MAX_MILLIHZ || config->amplitude_permille > 1000U ||
         config->offset_permille > 1000U || config->phase_decidegrees >= 3600U) {

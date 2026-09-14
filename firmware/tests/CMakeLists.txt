@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.22)
 project(firmware_tests LANGUAGES C)
 enable_testing()
 
+# Off by default: MSVC and the MinGW toolchain used on Windows ship no runtime for these,
+# so a default of ON would break the build most people run first. CI turns it on for a
+# second pass over the same suites, which checks the firmware sources for memory errors and
+# undefined behaviour as well as for the answers they return.
+option(FIRMWARE_TESTS_SANITIZE "Build the suites with ASan and UBSan" OFF)
+# Also off by default, and never on at the same time as the sanitizers: both instrument the
+# generated code, and a build carrying either is not the build anyone should be timing.
+option(FIRMWARE_TESTS_COVERAGE "Build the suites with gcov instrumentation" OFF)
+
 add_executable(test_awg test_awg.c ../App/awg/awg_waveform.c)
 target_include_directories(test_awg PRIVATE ../App/awg)
 add_executable(test_awg_refill test_awg_refill.c ../App/awg/awg_refill.c)
@@ -31,6 +40,18 @@ foreach(target test_awg test_awg_refill test_protocol test_usb_control test_scop
         target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+    endif()
+    if(FIRMWARE_TESTS_COVERAGE)
+        target_compile_options(${target} PRIVATE --coverage -O0 -g)
+        target_link_options(${target} PRIVATE --coverage)
+    endif()
+    if(FIRMWARE_TESTS_SANITIZE)
+        # Recovering from a finding would print it and carry on to a passing exit code, so
+        # the suite would go green with the bug still in it. These make the first finding
+        # fatal, which is the difference between a check and a log message.
+        target_compile_options(${target} PRIVATE -fsanitize=address,undefined
+            -fno-sanitize-recover=all -fno-omit-frame-pointer -g)
+        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
     endif()
 endforeach()
 if(NOT MSVC)

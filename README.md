@@ -83,12 +83,6 @@ The application warns when the firmware is older than it expects, naming both ve
 stays connected: a mismatch may not matter to what you are doing, but you should know it is
 there.
 
-Building a release needs `pip install ./desktop[release]`, then
-`python scripts/build_release.py`. Releases are cut by pushing a `v*` tag or by publishing
-from the repository's Releases page. Either way the workflow refuses before building
-anything if the tag, the package version and the firmware version macros disagree, then
-attaches the executable, the firmware image, a wheel and an sdist.
-
 ## Device control
 
 The desktop application and CLI use the native CDC port on CN5, separate from

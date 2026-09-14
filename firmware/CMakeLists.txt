@@ -13,7 +13,7 @@ project(firmware LANGUAGES C ASM)
 add_executable(firmware)
 add_subdirectory(cmake/stm32cubemx)
 target_link_libraries(firmware stm32cubemx)
-target_sources(firmware PRIVATE
+set(APP_SOURCES
     App/awg/awg.c App/awg/awg_waveform.c App/awg/awg_refill.c
     App/control/protocol.c App/control/commands.c App/control/usb_control.c
     App/scope/scope.c App/scope/scope_trigger.c
@@ -21,6 +21,15 @@ target_sources(firmware PRIVATE
     App/control/ownership.c App/rtos/tasks.c
     App/probe/probe.c App/probe/probe_divider.c
     App/mixed/mixed.c App/mixed/mixed_policy.c)
+target_sources(firmware PRIVATE ${APP_SOURCES})
+
+# The application's own code is held to the same standard as the host test build, which
+# already compiles most of these files with -Wall -Wextra -Werror. Applying it per source
+# rather than to the whole target is deliberate: CubeMX regenerates Core/ and Drivers/
+# wholesale and FreeRTOS is vendored unchanged, so a warning there is not ours to fix and
+# -Werror on it would turn the next regeneration into a broken build.
+set_source_files_properties(${APP_SOURCES} PROPERTIES
+    COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
 target_include_directories(firmware PRIVATE
     App/awg App/control App/scope App/logic App/rtos App/probe App/mixed)
 

@@ -82,13 +82,25 @@ jobs:
             dist/*.whl
             dist/*.tar.gz
             dist/firmware/*.elf
+      # The frozen application carries the firmware inside it, and only this job has an
+      # ARM toolchain. Passing the image on rather than rebuilding it on Windows also
+      # means the copy inside the executable and the copy attached to the release are
+      # the same build, which two separate compilations could not guarantee.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-image
+          path: firmware/build/Release/firmware.elf
 
   windows:
     name: Frozen application
-    needs: version
+    needs: [version, linux]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware-image
+          path: firmware/build/Release
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -109,6 +121,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          name: linux
+          path: assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
           path: assets
       - run: find assets -type f | sort
       - name: Write the notes

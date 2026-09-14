@@ -52,6 +52,12 @@ def build_application(name: str) -> bool:
     The firmware image goes inside it, so the application can flash the board without the
     user having to find a matching .elf.
     """
+    if not FIRMWARE.exists():
+        # PyInstaller reports a missing --add-data source in the middle of its own output,
+        # where it is easy to miss. Say it here instead, before anything is built.
+        print(f"  no firmware image at {FIRMWARE}")
+        print("  build the firmware first; --skip-firmware only skips staging it in dist/")
+        return False
     work = DIST / "pyinstaller"
     work.mkdir(parents=True, exist_ok=True)
     # Freeze a launcher rather than gui.py itself. Pointing PyInstaller at the module runs

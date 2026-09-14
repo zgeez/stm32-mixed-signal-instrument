@@ -80,7 +80,7 @@ class TransportStub:
                 0,
             )
         if command == Command.MIXED_ARM:
-            self.mixed_state = 2   # the capture is short, so it completes immediately
+            self.mixed_state = 2  # the capture is short, so it completes immediately
         elif command == Command.MIXED_STOP:
             self.mixed_state = 0
         if command == Command.MIXED_STATUS:

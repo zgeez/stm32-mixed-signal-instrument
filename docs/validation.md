@@ -125,6 +125,10 @@ samples at 9.88 MS/s in 10 s, zero overruns.
 
 **Result.** Median 1.16 ms, p99 2.32 ms, maximum 2.38 ms.
 
+Superseded. This predates the milestone 7 move of USB handling into a task, which introduced
+D-4 and put a fixed 20 ms floor under every request. With that fixed the median is 0.22 ms;
+see [characterization](characterization.md).
+
 **Verdict.** Pass.
 
 ### V-09 Protocol robustness
@@ -216,7 +220,9 @@ zero errors.
 2026-09-13; the dual-arbitrary regression also passed on 2026-09-12.
 
 **Result.** 90 starts across 2, 17 and 256 entries at 1, 1000 and 20000 Hz, 3 s silent and
-10 s with 251 paired polls, no added errors. Host tests cover both buffer halves, callback
+10 s of USB load, no added errors. Re-run after D-4 was fixed: the same 10 s now carries
+20,471 paired status polls rather than 251, so refills survive 81 times the host traffic the
+original run applied, still with no errors. Host tests cover both buffer halves, callback
 orders and unfinished work; an injected ownership fault latched, and Stop then Start
 recovered. A logic DMA read from inaccessible CCM raised a hardware error, released
 ownership, and the next capture completed. Software-seeded FIFO and direct-mode error codes
@@ -393,11 +399,19 @@ loopback channels showed zero-sample lag and 0.999997 correlation. Live scope co
 | D-1 | Mixed follower's first analog sample invalid at 500 kS/s | Minor | Fixed |
 | D-2 | Historical dual-arbitrary AWG freeze, cause unconfirmed | Major | Open, not reproducing |
 | D-3 | Native C suites cannot be built on the validation machine | Process | Open |
+| D-4 | Control task never woken by the CDC callbacks, 20 ms floor per request | Major | Fixed |
 
 **D-1.** Caused by the ADC DMA stream running in circular mode, which continues writing past
 the end of the transfer and can overwrite the first sample of the window before the task
 stops it. Fixed by setting the stream to normal mode in the .ioc, so the change survives
 regeneration. Verified clean in V-22.
+
+**D-4.** `tasks_notify_control()` was defined and declared but never called, so the control
+task ran only on its 10 ms idle timeout and reception was not rearmed until it did. Every
+request waited for that timer rather than the interrupt, giving 19.997 ms median and making a
+capture transfer an exact multiple of it. The transmit-complete callback had the same gap.
+Calling the notify from both, inside CubeMX user-code regions, took the median to 0.22 ms
+and a 2048-sample transfer from 3419.7 ms to 39.79 ms. Found by the milestone 9 harness.
 
 **D-2.** Did not reproduce on the RTOS build before optimization. Three hypotheses were
 tested and none held; a speculative fix showed no measurable change and was reverted.

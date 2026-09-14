@@ -15,7 +15,9 @@
 | 10. Distribution | Packaged desktop releases, firmware installation and compatibility checks | Clean-machine install, flash, verification, reconnect and upgrade tests |
 
 Milestones 0 through 7 have passing host checks and recorded board results. Milestone 8
-has host, coordination, shared-clock skew and all-rate capture results.
+has host, coordination, shared-clock skew and all-rate capture results. Milestone 9 has a
+repeatable harness and board-only results in [characterization](characterization.md);
+measurements needing an outside reference are scripted but not yet run.
 Characterization includes Debug/Release refill timing, hardware DMA error
 recovery and USB backpressure. Independent timing, analog accuracy and bandwidth
 measurements remain in milestone 9. See [validation](validation.md).

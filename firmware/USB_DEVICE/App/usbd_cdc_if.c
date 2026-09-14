@@ -22,6 +22,7 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
+#include "tasks.h"
 #include "usb_control.h"
 #include <string.h>
 
@@ -269,6 +270,10 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
   usb_control_receive(Buf, *Len);
+  /* The task cannot rearm reception until it consumes this packet, and without a wake it
+     only looks every CONTROL_IDLE_MS. That put a fixed 20 ms floor under every request and
+     made a capture transfer a multiple of it. */
+  tasks_notify_control();
   return (USBD_OK);
   /* USER CODE END 6 */
 }
@@ -320,6 +325,8 @@ static int8_t CDC_TransmitCplt_FS(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
   UNUSED(Buf);
   UNUSED(Len);
   UNUSED(epnum);
+  /* A reply longer than one packet waits here for the next chance to send. */
+  tasks_notify_control();
   /* USER CODE END 13 */
   return result;
 }

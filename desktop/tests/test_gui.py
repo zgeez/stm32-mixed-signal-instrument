@@ -670,20 +670,20 @@ def test_the_other_panels_leave_a_mixed_capture_alone(window, app):
 
     # The routine poll reports both streams complete while mixed owns the hardware.
     session.device_status_changed.emit(
-        device_status(owner=3, scope_state=2, logic_state=2,
-                      scope_capture_id=4, logic_capture_id=4)
+        device_status(owner=3, scope_state=2, logic_state=2, scope_capture_id=4, logic_capture_id=4)
     )
     app.processEvents()
 
-    stolen = [call for call in session.calls
-              if call[0] in ("read_capture", "read_logic_capture", "stop_scope", "stop_logic")]
+    stolen = [
+        call
+        for call in session.calls
+        if call[0] in ("read_capture", "read_logic_capture", "stop_scope", "stop_logic")
+    ]
     assert stolen == []
 
     # With mixed out of the way the same status is read normally.
     session.calls.clear()
-    session.device_status_changed.emit(
-        device_status(owner=1, scope_state=2, scope_capture_id=5)
-    )
+    session.device_status_changed.emit(device_status(owner=1, scope_state=2, scope_capture_id=5))
     app.processEvents()
     assert any(call[0] == "read_capture" for call in session.calls)
 

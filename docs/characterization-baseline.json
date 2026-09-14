@@ -1,0 +1,394 @@
+{
+  "configuration": {
+    "recorded": "2026-09-14T02:23:58+00:00",
+    "host": "Zii",
+    "python": "3.14.0",
+    "port": "COM4",
+    "git": {
+      "revision": "2bca15e",
+      "dirty": true
+    },
+    "firmware_build": {
+      "Debug": {
+        "sha256_prefix": "45c40b261ee12abf",
+        "bytes": 1697256,
+        "modified": "2026-09-14T02:23:52.063637+00:00"
+      },
+      "Release": {
+        "sha256_prefix": "096b2d843bb25f52",
+        "bytes": 94052,
+        "modified": "2026-09-14T01:49:57.775620+00:00"
+      }
+    },
+    "device": {
+      "name": "STM32-MSI",
+      "protocol_version": 1,
+      "capabilities": {
+        "channels": 2,
+        "waveforms": 63,
+        "min_hz": 1,
+        "max_hz": 20000,
+        "samples": 100
+      },
+      "build_identity": null
+    },
+    "clocks_hz": {
+      "hclk": 168000000,
+      "apb2_timer": 84000000,
+      "dac_update": 400000,
+      "adc_clock": 21000000.0
+    },
+    "operator": {
+      "vdda_volts": 3.0,
+      "wiring": [
+        "PA5-PC4",
+        "PA5-PE7"
+      ],
+      "equipment": null
+    }
+  },
+  "results": [
+    {
+      "name": "awg-frequency",
+      "summary": "Frequency resolution and quantization of the DDS",
+      "headline": "quantization <= 43.1 uHz, firmware agrees to 0.043 mHz",
+      "accumulator_step_hz": 9.313225746154785e-05,
+      "protocol_resolution_hz": 0.001,
+      "worst_quantization_hz": 4.3081283365609124e-05,
+      "worst_report_disagreement_hz": 4.3081283365609124e-05,
+      "points": [
+        {
+          "requested_hz": 1.0,
+          "reported_hz": 1.0,
+          "recomputed_hz": 0.9999610483646393,
+          "quantization_hz": -3.8951635360717773e-05,
+          "report_vs_recomputed_hz": 3.8951635360717773e-05
+        },
+        {
+          "requested_hz": 7.3,
+          "reported_hz": 7.3,
+          "recomputed_hz": 7.299985736608505,
+          "quantization_hz": -1.4263391494573341e-05,
+          "report_vs_recomputed_hz": 1.4263391494573341e-05
+        },
+        {
+          "requested_hz": 250.0,
+          "reported_hz": 250.0,
+          "recomputed_hz": 250.00004097819328,
+          "quantization_hz": 4.0978193283081055e-05,
+          "report_vs_recomputed_hz": -4.0978193283081055e-05
+        },
+        {
+          "requested_hz": 1000.0,
+          "reported_hz": 1000.0,
+          "recomputed_hz": 999.9999776482582,
+          "quantization_hz": -2.2351741790771484e-05,
+          "report_vs_recomputed_hz": 2.2351741790771484e-05
+        },
+        {
+          "requested_hz": 1234.567,
+          "reported_hz": 1234.567,
+          "recomputed_hz": 1234.566979110241,
+          "quantization_hz": -2.088975907099666e-05,
+          "report_vs_recomputed_hz": 2.088975907099666e-05
+        },
+        {
+          "requested_hz": 4999.999,
+          "reported_hz": 4999.999,
+          "recomputed_hz": 4999.998956918716,
+          "quantization_hz": -4.3081283365609124e-05,
+          "report_vs_recomputed_hz": 4.3081283365609124e-05
+        },
+        {
+          "requested_hz": 10000.0,
+          "reported_hz": 10000.0,
+          "recomputed_hz": 9999.999962747097,
+          "quantization_hz": -3.725290298461914e-05,
+          "report_vs_recomputed_hz": 3.725290298461914e-05
+        },
+        {
+          "requested_hz": 19999.999,
+          "reported_hz": 19999.999,
+          "recomputed_hz": 19999.99899417162,
+          "quantization_hz": -5.828380380989984e-06,
+          "report_vs_recomputed_hz": 5.828380380989984e-06
+        }
+      ]
+    },
+    {
+      "name": "acquisition-rates",
+      "summary": "Requested against achievable sample rates",
+      "headline": "scope exact at every rate, logic off by up to 1.18%",
+      "scope": [
+        {
+          "requested_hz": 100000,
+          "divider": 840.0,
+          "achievable_hz": 100000.0,
+          "error_ppm": 0.0,
+          "exact": true,
+          "captured": true
+        },
+        {
+          "requested_hz": 500000,
+          "divider": 168.0,
+          "achievable_hz": 500000.0,
+          "error_ppm": 0.0,
+          "exact": true,
+          "captured": true
+        },
+        {
+          "requested_hz": 1000000,
+          "divider": 84.0,
+          "achievable_hz": 1000000.0,
+          "error_ppm": 0.0,
+          "exact": true,
+          "captured": true
+        }
+      ],
+      "logic": [
+        {
+          "requested_hz": 1000000,
+          "actual_hz": 1000000,
+          "error_ppm": 0.0,
+          "exact": true
+        },
+        {
+          "requested_hz": 2000000,
+          "actual_hz": 2000000,
+          "error_ppm": 0.0,
+          "exact": true
+        },
+        {
+          "requested_hz": 5000000,
+          "actual_hz": 4941176,
+          "error_ppm": -11764.800000000001,
+          "exact": false
+        },
+        {
+          "requested_hz": 10000000,
+          "actual_hz": 9882352,
+          "error_ppm": -11764.800000000001,
+          "exact": false
+        }
+      ],
+      "worst_error_ppm": 11764.800000000001
+    },
+    {
+      "name": "command-latency",
+      "summary": "Round-trip time for a status request",
+      "headline": "median 0.22 ms idle, 0.23 ms loaded",
+      "idle": {
+        "count": 200,
+        "median_ms": 0.22124999668449163,
+        "p99_ms": 0.31970000418368727,
+        "max_ms": 0.36079999699722975
+      },
+      "loaded": {
+        "count": 200,
+        "median_ms": 0.23235000116983429,
+        "p99_ms": 0.6636999969487078,
+        "max_ms": 0.9327000007033348
+      }
+    },
+    {
+      "name": "transfer-throughput",
+      "summary": "Capture transfer time against depth",
+      "headline": "up to 206 kB/s, 39.8 ms at depth 2048",
+      "scope": [
+        {
+          "samples": 64,
+          "payload_bytes": 256,
+          "median_ms": 1.3600499987660442,
+          "throughput_kb_s": 188.228374127617
+        },
+        {
+          "samples": 256,
+          "payload_bytes": 1024,
+          "median_ms": 5.157550000149058,
+          "throughput_kb_s": 198.5438822639442
+        },
+        {
+          "samples": 512,
+          "payload_bytes": 2048,
+          "median_ms": 10.528600003453903,
+          "throughput_kb_s": 194.5177895758367
+        },
+        {
+          "samples": 1024,
+          "payload_bytes": 4096,
+          "median_ms": 20.31035000254633,
+          "throughput_kb_s": 201.6705767988479
+        },
+        {
+          "samples": 2048,
+          "payload_bytes": 8192,
+          "median_ms": 39.78610000194749,
+          "throughput_kb_s": 205.90105588632738
+        }
+      ],
+      "peak_kb_s": 205.90105588632738
+    },
+    {
+      "name": "loopback-transfer",
+      "summary": "Combined DAC-to-ADC gain, offset and linearity",
+      "headline": "gain 1.0017, offset +5.7 mV, worst departure 1.3 mV (1.7 LSB)",
+      "points": [
+        {
+          "dac_code": 205,
+          "ideal_v": 0.15018315018315018,
+          "measured_v": 0.15615270146520147
+        },
+        {
+          "dac_code": 410,
+          "ideal_v": 0.30036630036630035,
+          "measured_v": 0.30637877747252745
+        },
+        {
+          "dac_code": 614,
+          "ideal_v": 0.44981684981684983,
+          "measured_v": 0.4550280448717949
+        },
+        {
+          "dac_code": 819,
+          "ideal_v": 0.6,
+          "measured_v": 0.6069167811355312
+        },
+        {
+          "dac_code": 1024,
+          "ideal_v": 0.7501831501831502,
+          "measured_v": 0.7570884844322344
+        },
+        {
+          "dac_code": 1229,
+          "ideal_v": 0.9003663003663004,
+          "measured_v": 0.9078983516483516
+        },
+        {
+          "dac_code": 1434,
+          "ideal_v": 1.0505494505494506,
+          "measured_v": 1.0581444597069598
+        },
+        {
+          "dac_code": 1638,
+          "ideal_v": 1.2,
+          "measured_v": 1.2079241071428573
+        },
+        {
+          "dac_code": 1843,
+          "ideal_v": 1.3501831501831503,
+          "measured_v": 1.358716804029304
+        },
+        {
+          "dac_code": 2048,
+          "ideal_v": 1.5003663003663004,
+          "measured_v": 1.5096096611721612
+        },
+        {
+          "dac_code": 2253,
+          "ideal_v": 1.6505494505494505,
+          "measured_v": 1.6594522664835165
+        },
+        {
+          "dac_code": 2458,
+          "ideal_v": 1.8007326007326008,
+          "measured_v": 1.8091804029304028
+        },
+        {
+          "dac_code": 2662,
+          "ideal_v": 1.9501831501831501,
+          "measured_v": 1.9598643543956045
+        },
+        {
+          "dac_code": 2867,
+          "ideal_v": 2.1003663003663005,
+          "measured_v": 2.109243360805861
+        },
+        {
+          "dac_code": 3072,
+          "ideal_v": 2.2505494505494505,
+          "measured_v": 2.26068853021978
+        },
+        {
+          "dac_code": 3277,
+          "ideal_v": 2.4007326007326006,
+          "measured_v": 2.410885989010989
+        },
+        {
+          "dac_code": 3482,
+          "ideal_v": 2.5509157509157507,
+          "measured_v": 2.560548305860806
+        },
+        {
+          "dac_code": 3686,
+          "ideal_v": 2.7003663003663005,
+          "measured_v": 2.7101333562271064
+        },
+        {
+          "dac_code": 3891,
+          "ideal_v": 2.8505494505494506,
+          "measured_v": 2.8609546703296704
+        }
+      ],
+      "gain": 1.0017487785100168,
+      "offset_v": 0.005684070729447551,
+      "worst_residual_v": 0.0012595057149056288,
+      "worst_residual_lsb": 1.7192253008461833,
+      "lsb_v": 0.0007326007326007326
+    },
+    {
+      "name": "noise-floor",
+      "summary": "Spread of a held DC level, within and between captures",
+      "headline": "3.67 LSB within a capture, 0.51 LSB between",
+      "within_capture_lsb": 3.6714384539001297,
+      "within_capture_uv": 2689.6985010257363,
+      "between_capture_lsb": 0.5103777137476788,
+      "between_capture_uv": 373.9030869946365,
+      "captures": 12,
+      "lsb_uv": 732.6007326007326
+    },
+    {
+      "name": "trigger-position",
+      "summary": "Where the trigger lands against the requested pretrigger",
+      "headline": "worst trigger index error 0 samples",
+      "entries": [
+        {
+          "pretrigger_permille": 0,
+          "expected_index": 0,
+          "reported_index": 0,
+          "error_samples": 0
+        },
+        {
+          "pretrigger_permille": 100,
+          "expected_index": 51,
+          "reported_index": 51,
+          "error_samples": 0
+        },
+        {
+          "pretrigger_permille": 250,
+          "expected_index": 128,
+          "reported_index": 128,
+          "error_samples": 0
+        },
+        {
+          "pretrigger_permille": 500,
+          "expected_index": 256,
+          "reported_index": 256,
+          "error_samples": 0
+        },
+        {
+          "pretrigger_permille": 750,
+          "expected_index": 384,
+          "reported_index": 384,
+          "error_samples": 0
+        },
+        {
+          "pretrigger_permille": 900,
+          "expected_index": 460,
+          "reported_index": 460,
+          "error_samples": 0
+        }
+      ],
+      "worst_error_samples": 0
+    }
+  ]
+}

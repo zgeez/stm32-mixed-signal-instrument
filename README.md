@@ -102,4 +102,4 @@ and USB backpressure.
 This is an unprotected low-voltage prototype. Inputs must stay within the board's
 actual supply/reference limits. No mains, negative-voltage or automotive inputs.
 
-[Architecture](docs/architecture/OVERVIEW.md) | [Roadmap](docs/PLAN.md) | [Validation](docs/validation.md)
+[Architecture](docs/architecture/OVERVIEW.md) | [Roadmap](docs/PLAN.md) | [Validation](docs/validation.md) | [Characterization](docs/characterization.md)

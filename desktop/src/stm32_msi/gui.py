@@ -4,10 +4,12 @@ import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -34,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 from serial.tools import list_ports
 
+from . import flashing
 from .instrument import (
     LOGIC_CHANNELS,
     LOGIC_RATES,
@@ -56,6 +60,23 @@ from .mixed import Stream, align
 from .protocol import VERSION
 from .scope import adc_volts, measure
 from .session import DeviceSession
+
+
+def application_icon() -> QIcon:
+    """The window and taskbar icon, whether running from source or from a frozen build.
+
+    A frozen build unpacks its data beside the interpreter it carries, so the same
+    relative layout is searched in both places.
+    """
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", "."))
+    else:
+        base = Path(__file__).resolve().parent
+    for name in ("icon.ico", "icon.png"):
+        candidate = base / "resources" / name
+        if candidate.exists():
+            return QIcon(str(candidate))
+    return QIcon()
 
 
 @dataclass(frozen=True)
@@ -1481,6 +1502,7 @@ class MainWindow(QMainWindow):
         self._firmware = None
 
         self.setWindowTitle("STM32 Mixed-Signal Instrument")
+        self.setWindowIcon(application_icon())
         self.setMinimumSize(1050, 700)
         self._build_ui()
         self._connect_signals()
@@ -1580,12 +1602,17 @@ class MainWindow(QMainWindow):
         self.port_combo.setMinimumWidth(260)
         self.refresh_button = QPushButton("Refresh")
         self.connect_button = QPushButton("Connect")
+        self.flash_button = QPushButton("Flash firmware")
+        self.flash_button.setToolTip(
+            "Write the firmware shipped with this application to the board over ST-LINK"
+        )
         self.advanced_button = QPushButton("Advanced")
         self.advanced_button.setToolTip("Supply reference, pattern trigger and error counters")
         bar.addWidget(self.port_combo, 1)
         bar.addWidget(self.refresh_button)
         bar.addWidget(self.connect_button)
         bar.addSpacing(12)
+        bar.addWidget(self.flash_button)
         bar.addWidget(self.advanced_button)
 
         # A mismatch is worth saying once and leaving on screen; the status bar's message
@@ -1607,6 +1634,8 @@ class MainWindow(QMainWindow):
         self.refresh_button.clicked.connect(self.refresh_ports)
         self.connect_button.clicked.connect(self._toggle_connection)
         self.advanced_button.clicked.connect(self.advanced.show)
+        self.flash_button.clicked.connect(self._flash_firmware)
+        self._session.flash_finished.connect(self._on_flash_finished)
         self.reference_output.changed.connect(self._session.configure_probe)
         self.display.mode_changed.connect(self._on_mode_changed)
         for panel in self.outputs:
@@ -1944,6 +1973,68 @@ class MainWindow(QMainWindow):
             self.refill_miss_label.setText(str(status.refill_misses))
         self._update_controls()
 
+    def _flash_firmware(self) -> None:
+        """Write the image this application ships with, after saying what it replaces.
+
+        Asking first because the click is one button away from everything else and it
+        overwrites whatever is on the board. It is recoverable, but not silently.
+        """
+        image = flashing.bundled_image()
+        if image is None:
+            self.statusBar().showMessage("Error: no firmware image ships with this build")
+            return
+        # Check before asking anything else. Confirming a flash and then being told the
+        # tool is missing wastes the decision and explains nothing.
+        if flashing.find_programmer() is None:
+            self._offer_programmer_download()
+            return
+        port = self.port_combo.currentData()
+        where = port or "no port selected, so the result cannot be confirmed"
+        answer = QMessageBox.question(
+            self,
+            "Flash firmware",
+            f"Replace the firmware on the board with {image.name}?\n\n"
+            f"Verify on: {where}\n\n"
+            "The board must be plugged in at CN1, the ST-LINK port.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.statusBar().showMessage("Flashing, this takes a few seconds...")
+        self._session.flash_firmware(image, port or "")
+
+    def _offer_programmer_download(self) -> None:
+        """Send the user to the one thing this application cannot ship for them.
+
+        Naming a missing tool is not much help on its own, so this opens the page rather
+        than leaving them to search for it.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle("STM32CubeProgrammer is needed")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText("Flashing needs STM32CubeProgrammer, and it was not found.")
+        box.setInformativeText(
+            "It is ST's own tool and cannot be shipped with this application. It is what "
+            "writes to the board over ST-LINK. Everything else here works without it.\n\n"
+            "Install it, then press Flash firmware again."
+        )
+        download = box.addButton("Open download page", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is download:
+            QDesktopServices.openUrl(QUrl(flashing.PROGRAMMER_URL))
+            self.statusBar().showMessage("Opened the STM32CubeProgrammer download page")
+        else:
+            self.statusBar().showMessage("Flashing needs STM32CubeProgrammer installed")
+
+    def _on_flash_finished(self, ok: bool, detail: str) -> None:
+        self.statusBar().showMessage(f"Firmware {detail}" if ok else f"Flash failed: {detail}")
+        port = self.port_combo.currentData()
+        if ok and port:
+            # Programming resets the board, so the previous session is gone regardless.
+            self._session.connect_device(port)
+
     def _on_firmware(self, version) -> None:
         """Say when the board and this application disagree, but let the session continue.
 
@@ -2044,6 +2135,7 @@ class MainWindow(QMainWindow):
         self.port_combo.setEnabled(not self._connected and not self._busy)
         self.refresh_button.setEnabled(not self._connected and not self._busy)
         self.connect_button.setEnabled(not self._busy and (self._connected or available))
+        self.flash_button.setEnabled(not self._busy)
         self.reference_output.set_editable(self._connected and not self._busy)
         self.outputs[0].set_editable(editable, extended)
         self.outputs[1].set_editable(editable and extended, extended)
@@ -2087,6 +2179,8 @@ class MainWindow(QMainWindow):
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("STM32 Mixed-Signal Instrument")
+    # Set on the application as well as the window, or the taskbar keeps the stock icon.
+    app.setWindowIcon(application_icon())
     window = MainWindow()
     window.show()
     return app.exec()

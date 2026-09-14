@@ -21,6 +21,9 @@ stm32-msi-gui = "stm32_msi.gui:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+stm32_msi = ["resources/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"

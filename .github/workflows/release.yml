@@ -6,10 +6,19 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Publishing from the Releases page creates the tag and the release itself. Listening for
+  # that too means the assets get attached whichever way the release was started.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
   contents: write
+
+# Both events can fire for one release. Let them queue rather than race for the upload.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   version:
@@ -90,7 +99,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/*-windows.zip
+          path: dist/*.exe
 
   publish:
     name: Publish the release
@@ -109,22 +118,28 @@ jobs:
           cat > notes.md <<EOF
           Desktop application and firmware for the STM32F407G-DISC1 mixed-signal instrument.
 
-          **With Python installed:** \`pip install stm32_msi_desktop-${VERSION}-py3-none-any.whl\`
-          then run \`stm32-msi-gui\`.
+          ### Getting started
 
-          **Without Python:** download \`stm32-msi-${VERSION}-windows.zip\`, unpack it, and run
-          the executable inside. It carries its own interpreter.
+          1. Download **\`stm32-msi-${VERSION}.exe\`** and run it. Nothing to install: it
+             carries everything it needs, including the matching firmware.
+          2. Plug the board into **CN1**, the ST-LINK port.
+          3. Press **Flash firmware**, then **Connect**.
 
-          **Flash the board** over ST-LINK, which also confirms it came back up:
+          Flashing needs [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html)
+          installed. It is ST's own tool and cannot be shipped here; it is what actually
+          drives the ST-LINK. Everything else works without it.
 
-          \`\`\`
-          python scripts/flash.py --port COM4 --image stm32-msi-${VERSION}.elf
-          \`\`\`
+          The application writes the firmware, then reconnects and asks the board what it is,
+          so a flash that did not take is reported rather than assumed. If the board is
+          running an older build it still connects, and says so rather than refusing.
 
-          The application warns, without refusing to connect, if the firmware on the board is
-          older than it expects. Measured limits and error budgets are in
-          \`docs/characterization.md\`; what has and has not been verified is in
-          \`docs/validation.md\`.
+          ### Also attached
+
+          \`stm32-msi-${VERSION}.elf\` for flashing by other means, and a wheel and sdist for
+          installing as a Python package.
+
+          Measured limits and error budgets are in \`docs/characterization.md\`; what has and
+          has not been verified is in \`docs/validation.md\`.
           EOF
           cat notes.md
       # Only a tag publishes. A manual run stops here, having proved the artifacts build.
@@ -134,9 +149,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mapfile -t files < <(find assets -type f \( -name '*.whl' -o -name '*.tar.gz' \
-            -o -name '*.elf' -o -name '*.zip' \) | sort)
+            -o -name '*.elf' -o -name '*.exe' \) | sort)
           test ${#files[@]} -ge 4 || { echo "expected at least four assets"; exit 1; }
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "STM32 Mixed-Signal Instrument ${GITHUB_REF_NAME}" \
-            --notes-file notes.md \
-            "${files[@]}"
+          # The release may already exist, because publishing from the Releases page creates
+          # it before this runs. Attach to it rather than failing on the name clash.
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" --clobber "${files[@]}"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "STM32 Mixed-Signal Instrument ${GITHUB_REF_NAME}" \
+              --notes-file notes.md \
+              "${files[@]}"
+          fi

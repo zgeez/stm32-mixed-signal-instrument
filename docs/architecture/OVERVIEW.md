@@ -82,13 +82,15 @@ uses finite captures. See the [protocol](../../protocol/README.md) for layouts a
 ## Desktop
 
 UI -> instrument model -> protocol -> serial transport. A Qt worker handles USB; the host
-computes measurements and UART/SPI/I2C decoding. The live scope view appends finite captures
+computes measurements and UART/SPI/I2C decoding. Flashing lives in `flashing.py`, shared by
+the Flash button and `scripts/flash.py`, and drives an installed STM32CubeProgrammer because
+ST's tool cannot be redistributed. The live scope view appends finite captures
 on a cumulative time axis, excluding transfer gaps.
 
-One workspace, not a tab per peripheral: both outputs and the PC6 reference stay visible
-while a single display switches between analog, digital and both on one timeline. A combined
-capture sends its own acquisition settings with the arm, so it no longer depends on the other
-views having been run first. Settings chosen once and the error counters sit behind Advanced.
+The window is one workspace: sources on the left, a single display on the right switching
+between analog, digital and both on one timeline. A combined capture carries its own
+acquisition settings with the arm, so it stands alone rather than inheriting whatever the
+other views last pushed. Settings chosen once and the error counters sit behind Advanced.
 
 ## References
 

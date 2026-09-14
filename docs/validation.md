@@ -5,8 +5,8 @@
 | Item under test | STM32F407G-DISC1 mixed-signal instrument, firmware and desktop application |
 | MCU / SDK | STM32F407VGT6, STM32CubeMX 6.18.1, STM32CubeF4 1.28.3, Arm GNU 14.3.1 |
 | Interfaces | ST-LINK SWD for programming, native USB CDC for control |
-| Period | 2026-09-10 to 2026-09-13 |
-| Coverage | Milestones 1-8 |
+| Period | 2026-09-10 to 2026-09-14 |
+| Coverage | Milestones 1-10 |
 
 Loopback checks share the sampler's clock, so they verify function, not calibration.
 Debug firmware unless a record states otherwise.
@@ -42,6 +42,7 @@ Debug firmware unless a record states otherwise.
 | V-25 | Packaging and clean install | Pass |
 | V-26 | Firmware installation and verification | Pass |
 | V-27 | Version compatibility and upgrade | Pass |
+| V-28 | Sample loss | Pass |
 
 Open defects are listed in section 4, uncharacterized areas in section 5.
 
@@ -63,16 +64,14 @@ output and 1 KiB of cached arbitrary DAC codes.
 
 **Method.** Python suite, native C suites, Ruff, Debug and Release firmware builds.
 
-**Result.** 185 Python tests, Ruff and both builds passed on 2026-09-13. Coverage spans DDS
-and refill maths, protocol framing, USB backpressure, acquisition ownership, measurements,
-UART/SPI/I2C decoding, mixed-capture alignment and GUI behaviour. All nine C suites pass,
-built with MSVC.
+**Result.** 206 Python tests, Ruff and both firmware builds pass. Coverage spans DDS and
+refill maths, protocol framing, USB backpressure, acquisition ownership, measurements,
+UART/SPI/I2C decoding, mixed-capture alignment, flashing and GUI behaviour. All nine C suites
+pass under MinGW and under MSVC, and CI builds them with GCC on Ubuntu.
 
-D-3 recorded these as unbuildable on this machine. That was wrong: MinGW is broken here, but
-the tests also build under MSVC, which CMakeLists.txt has always had a branch for and which
-the build directory was already configured to use. One toolchain failing was taken for the
-tests failing, and milestones 8 and 9 were recorded as having no C coverage when they could
-have had it.
+Building them needs the toolchain's own directory on PATH; invoking the compiler by absolute
+path alone leaves it unable to load the libraries it depends on. `testing.md` carries the
+command for each toolchain.
 
 **Verdict.** Pass.
 
@@ -242,6 +241,17 @@ recovered. A logic DMA read from inaccessible CCM raised a hardware error, relea
 ownership, and the next capture completed. Software-seeded FIFO and direct-mode error codes
 incremented overruns and recovered.
 
+Re-tested under maximum contention on the Release build with `scripts/check_contention.py`:
+both channels playing 256-entry arbitrary tables at 20 kHz while a mixed capture drove the
+ADC pair and the GPIO sampler, host polling throughout. 180 s, 2,598 captures, 25,615 polls.
+The AWG never left the running state, no capture stalled, and not one counter moved. No
+refill missed its 1.28 ms deadline, which extends the deadline evidence from the original
+20 s Debug loads to a longer Release run under heavier load.
+
+The FIFO and direct-mode DMA error flags did not fire. Keeping every stream busy at once is
+the only lever available, because the DAC updates at a fixed 400 kS/s whatever waveform is
+requested, so this bounds rather than closes L-4.
+
 **Verdict.** Pass. See L-4 and L-5.
 
 ### V-17 AWG refill latency
@@ -360,7 +370,7 @@ and -552 ns in two runs, against roughly -150 ns for every incommensurate freque
 **Method.** Known square reference captured across rate changes, trigger modes and pretrigger
 settings, with run lengths compared against the reference period.
 
-**Result.** Two defects were found and fixed; a third remains open as D-1.
+**Result.** Three defects were found here, all since fixed. The third is D-1.
 
 Lowering the scope sample rate left the first conversion invalid: 8/8 captures going 1 MS/s
 to 500 kS/s, 0/8 the other way, 0/8 for a re-arm or a sample-count change, and 0 in 1000 runs
@@ -408,14 +418,21 @@ loopback channels showed zero-sample lag and 0.999997 correlation. Live scope co
 
 ### V-25 Packaging and clean install
 
-**Method.** `scripts/build_release.py` builds a wheel, an sdist and a frozen Windows
-application, and stages the firmware image beside them. The wheel was then installed into an
-empty virtual environment that shared nothing with the development one.
+**Method.** `scripts/build_release.py` builds a wheel, an sdist and a single Windows
+executable carrying its own interpreter and the firmware image, and stages the image beside
+them. The wheel was then installed into an empty virtual environment that shared nothing with
+the development one.
 
-**Result.** Wheel 36 KiB, sdist 51 KiB, application folder 160 MB and 66 MB zipped. The fresh environment
-resolved numpy 2.5.3, pyqtgraph 0.14.0, pyserial 3.5 and PySide6 6.11.2 from the declared
-ranges, created both console entry points, and the CLI returned device status from the board.
-The frozen application launched and stayed running.
+**Result.** Wheel 66 KiB, sdist 77 KiB, and one 63.2 MiB executable carrying its own icon,
+the firmware image and the interpreter. It reached a visible window 1.7 s after launch. The
+bundle unpacks `firmware.elf` at 94,052 bytes and `resources/icon.ico` at 18,778 bytes, both
+where the application looks for them, and the icon resolves at all seven sizes from 16 to
+256 pixels. The fresh environment resolved numpy 2.5.3, pyqtgraph 0.14.0, pyserial 3.5 and
+PySide6 6.11.2 from the declared ranges, created both console entry points, and the CLI
+returned device status from the board.
+
+One file rather than a folder and a zip, so what is downloaded is what runs. The startup cost
+of unpacking on every launch is the price, and it was measured rather than assumed.
 
 The first frozen build failed on launch: PyInstaller was pointed at `gui.py`, which runs it
 as `__main__` with no package, so its relative imports raised ImportError. It now freezes a
@@ -432,12 +449,20 @@ run locally and produce the four assets the publish step expects.
 
 ### V-26 Firmware installation and verification
 
-**Method.** `scripts/flash.py` locates STM32CubeProgrammer, writes and verifies the image,
-then reconnects over the CDC port and asks the board what it is.
+**Method.** `stm32_msi.flashing` locates STM32CubeProgrammer, writes and verifies the image,
+then reconnects over the CDC port and asks the board what it is. Driven both from
+`scripts/flash.py` and from the application's own Flash firmware button.
 
-**Result.** Flash verified and the board answered `0.1.0 (a82d489)`, matching the commit the
-image was built from. The script reports failure if the programmer is missing, the write is
-unverified, the port never answers, or the version is older than the application expects.
+**Result.** From the command line, flash verified and the board answered `0.1.0 (a82d489)`,
+matching the commit the image was built from. From the application, 7 of 7 checks passed on
+hardware: it asked before overwriting, dropped the connection, wrote, verified, reported the
+running version, reconnected, and showed no mismatch warning afterwards.
+
+Failure is reported rather than assumed if the write is unverified, the port never answers,
+or the version is older than expected. STM32CubeProgrammer is ST's tool and cannot be
+redistributed, so the application locates an installed copy; when it finds none it says so
+before asking anything else and offers to open ST's download page, rather than naming a
+missing tool and leaving the user to search for it.
 
 A verified download is not evidence that an image runs, which is why the two steps are one
 command. An earlier version of this check looked for the verification line without passing
@@ -470,44 +495,87 @@ tied to the image that produced it.
 
 **Verdict.** Pass.
 
+### V-28 Sample loss
+
+**Method.** TIM3's PC6 reference wired to PE7, 37,004 Hz, 30 captures of 4096 samples at each
+rate. Edge positions are fitted against their ordinal number; the slope is samples per half
+period. Steady loss makes the capture shorter than the reported rate implies and shows in the
+slope. A single dropped sample shifts every later edge by one, which no straight line absorbs,
+so it shows as a step in the residuals. `scripts/check_sample_loss.py`.
+
+| Sample rate | Fitted / expected | Spread | Worst step | Steady loss bounded at |
+| --- | --- | --- | --- | --- |
+| 9.882 MS/s | 0.9999917 | 26 ppm | 0.152 | 1 in 119,903 |
+| 4.941 MS/s | 0.9999883 | 6 ppm | 0.156 | 1 in 85,423 |
+| 2 MS/s | 0.9999877 | 12 ppm | 0.464 | 1 in 81,250 |
+| 1 MS/s | 0.9999887 | 6 ppm | 0.277 | 1 in 88,362 |
+
+**Result.** No steady loss above the bound and no isolated drop at any rate. A dropped sample
+is a step of exactly one, because loss is whole samples; the worst innocent step measured was
+0.46.
+
+Periodicity does not hide either failure. Only losing a whole period could pass unnoticed,
+and the slope test bounds that directly.
+
+The 8 to 12 ppm shortfall common to all four rates is not loss. It is the reference frequency
+being reported as a whole hertz: 37000 Hz asks for 2270 ticks of an 84 MHz clock, which is
+37004.4 Hz, reported as 37004, an 11.0 ppm understatement of the true spacing. Correcting for
+it leaves every rate within its own scatter. The tabulated bounds are therefore conservative,
+limited by that reporting granularity rather than by anything detected.
+
+Two earlier attempts failed for reasons worth keeping. Driving the pattern from the AWG could
+not work: an isolated table entry leaves the DAC over about 4 us, which is 40 samples of
+ambiguity at 9.882 MS/s where a drop moves an edge by one. The pattern itself played
+correctly, with analog crossings on clean 5 us multiples, so the source was the limit, not the
+sampler. Separately the step detector first flagged 0.53 samples at 2 MS/s as a drop; it takes
+a maximum over every split point, and splits with two or three edges on one side are dominated
+by their own scatter. Requiring five either side and setting the threshold at 0.75, between
+that noise floor and the 1.0 a real drop gives, resolved it.
+
+**Verdict.** Pass.
+
 ## 4. Defects
 
 | ID | Description | Severity | Status |
 | --- | --- | --- | --- |
 | D-1 | Mixed follower's first analog sample invalid at 500 kS/s | Minor | Fixed |
-| D-2 | Historical dual-arbitrary AWG freeze, cause unconfirmed | Major | Open, not reproducing |
-| D-3 | MinGW on the validation machine compiles nothing | Minor | Open, worked around |
+| D-2 | Historical dual-arbitrary AWG freeze | Major | Closed, not reproduced |
 | D-4 | Control task never woken by the CDC callbacks, 20 ms floor per request | Major | Fixed |
+
+D-3 was withdrawn. It recorded a toolchain failure that turned out to be an invocation error
+rather than a defect in anything under test. The numbering keeps its gap so that references
+elsewhere stay valid.
 
 **D-1.** Caused by the ADC DMA stream running in circular mode, which continues writing past
 the end of the transfer and can overwrite the first sample of the window before the task
 stops it. Fixed by setting the stream to normal mode in the .ioc, so the change survives
 regeneration. Verified clean in V-22.
 
+**D-2.** Closed as not reproduced, which is a different disposition from fixed: no root cause
+was ever found.
+
+Observed on a pre-RTOS build. Three hypotheses were tested and none held; a speculative fix
+showed no measurable change and was reverted. The architecture has since changed underneath
+it, through the move to FreeRTOS tasks, the CDC wake fix in D-4 and the ADC DMA mode change
+in D-1, so the code it lived in may no longer exist. The hardest conditions available were
+then tried on the current Release build: 180 s of maximum contention with both channels on
+arbitrary tables, 2,598 captures, no stall and no counter movement.
+
+Reopen on any recurrence. Absence across these runs bounds it; it does not explain it.
+
 **D-4.** `tasks_notify_control()` was defined and declared but never called, so the control
 task ran only on its 10 ms idle timeout and reception was not rearmed until it did. Every
 request waited for that timer rather than the interrupt, giving 19.997 ms median and making a
 capture transfer an exact multiple of it. The transmit-complete callback had the same gap.
-Calling the notify from both, inside CubeMX user-code regions, took the median to 0.22 ms
-and a 2048-sample transfer from 3419.7 ms to 39.79 ms. Found by the milestone 9 harness.
-
-**D-2.** Did not reproduce on the RTOS build before optimization. Three hypotheses were
-tested and none held; a speculative fix showed no measurable change and was reverted.
-
-**D-3.** MinGW `cc1.exe` exits 127 and compiles nothing, including a bare `int main(void)`.
-It is a broken install, not a project fault, and it blocks nothing: the same suites build and
-run under MSVC, and CI builds them with GCC on Ubuntu. Repairing MinGW would remove the
-detour. The lasting cost was the conclusion drawn from it, corrected in V-01.
-The failure predates the milestone 8 changes and is independent of them. Milestone 8 adds no
-host-testable C: its only firmware change is in `scope.c`, which requires the HAL and is
-covered by V-22 instead.
+Calling the notify from both, inside CubeMX user-code regions, took the median to 0.22 ms and
+a 2048-sample transfer from 3419.7 ms to 39.79 ms. Found by the milestone 9 harness.
 
 ## 5. Limitations
 
 | ID | Limitation |
 | --- | --- |
 | L-1 | Analog accuracy, distortion and bandwidth are uncharacterized. Loopback alone cannot isolate which path contributes an error. PA4's audio connection can load DAC1, and PA5 shares the deselected motion sensor's clock trace. |
-| L-2 | Independent time-base accuracy is unmeasured. No loss was detected in the patterns tested, but periodic signals can hide it, and asynchronous pulse limits are uncharacterized. One observed single-sample pulse is not a guaranteed minimum width. GPIO reads land when DMA wins the bus rather than exactly at the timer edge, so pulses can be missed without an error flag; the 10 MS/s setting is experimental. |
+| L-2 | Independent time-base accuracy is unmeasured: every rate divides one crystal, so a frequency error is invisible from inside. Asynchronous pulse limits are uncharacterized. One observed single-sample pulse is not a guaranteed minimum width, and GPIO reads land when DMA wins the bus rather than exactly at the timer edge, so a pulse can be missed without an error flag; the 10 MS/s setting is experimental. Sample loss itself is bounded in V-28. |
 | L-3 | Decoder checks used AWG-generated patterns, not independent external devices. |
 | L-4 | FIFO and direct-mode tests establish software handling, not hardware fault generation. |
 | L-5 | Deadline shutdown is IRQ-driven and may occur after a stale sample reaches the DAC. |

@@ -158,7 +158,8 @@ USB handling into a task, which introduced the regression. The figures above sup
 | Combined converter nonlinearity | 1.72 LSB worst of four runs | 19 levels, 5% to 95% of full scale |
 | Noise floor | 3.3 to 3.7 LSB rms per sample | DC level held, 12 captures per run |
 | Narrowest resolved pulse | one sample interval | Shared clock; see V-14 and the gap below |
-| Sample loss | not established either way | Attempted with an aperiodic table; see testing.md |
+| Steady sample loss | better than 1 in 81,000 samples | Worst of four rates, PC6 reference, 30 captures each |
+| Isolated sample loss | none seen | Worst residual step 0.46 against the 1.0 a drop produces |
 | Command round trip | 0.22 to 0.26 ms median | 200 requests per run |
 | Capture throughput | 186 to 206 kB/s | 2048 samples |
 

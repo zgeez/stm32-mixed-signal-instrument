@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -29,6 +30,7 @@ from stm32_msi.instrument import (
 class FakeSession(QObject):
     connected = Signal(str, object, object)
     firmware_reported = Signal(object)
+    flash_finished = Signal(bool, str)
     status_changed = Signal(object)
     scope_status_changed = Signal(object)
     capture_ready = Signal(object)
@@ -86,6 +88,9 @@ class FakeSession(QObject):
 
     def configure_probe(self, frequency_hz, duty_percent=50.0):
         self.calls.append(("configure_probe", frequency_hz, duty_percent))
+
+    def flash_firmware(self, image=None, port=""):
+        self.calls.append(("flash_firmware", image, port))
 
     def stop_mixed(self):
         self.calls.append(("stop_mixed",))
@@ -754,6 +759,90 @@ def test_the_demoted_settings_live_in_the_advanced_panel(window, app):
         assert view.advanced.isAncestorOf(combo)
     # Still readable where the panel needs them, which is what keeps the config correct.
     assert view.scope.config().trigger_level == round(1.5 * 4095 / view.scope.reference.value())
+
+
+def test_flashing_asks_before_it_overwrites_the_board(window, app, monkeypatch):
+    """One button away from everything else, and it replaces what is on the board."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from stm32_msi import flashing as flashing_module
+    from stm32_msi import gui as gui_module
+
+    view, session = window
+    connect(view, session, app)
+    monkeypatch.setattr(gui_module.flashing, "bundled_image", lambda: Path("firmware.elf"))
+    # Pin this: on a machine without the tool, and on CI, the click would otherwise take
+    # the download route and never reach the confirmation.
+    monkeypatch.setattr(gui_module.flashing, "find_programmer", lambda: "programmer.exe")
+
+    asked = []
+
+    def decline(*args, **_kwargs):
+        asked.append(args[2])
+        return QMessageBox.StandardButton.Cancel
+
+    monkeypatch.setattr(gui_module.QMessageBox, "question", staticmethod(decline))
+    session.calls.clear()
+    view.flash_button.click()
+    app.processEvents()
+    assert asked, "it must ask first"
+    assert "CN1" in asked[0], "and say where the board has to be plugged in"
+    assert not [call for call in session.calls if call[0] == "flash_firmware"]
+
+    monkeypatch.setattr(
+        gui_module.QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+    )
+    view.flash_button.click()
+    app.processEvents()
+    sent = [call for call in session.calls if call[0] == "flash_firmware"]
+    assert sent and sent[-1][2] == "COM4", "the selected port is where it verifies"
+    assert flashing_module.IMAGE_NAME == "firmware.elf"
+
+
+def test_a_missing_programmer_routes_to_the_download(window, app, monkeypatch):
+    """Naming a missing tool is little help; the point is to offer the way to get it."""
+    from stm32_msi import gui as gui_module
+
+    view, session = window
+    connect(view, session, app)
+    monkeypatch.setattr(gui_module.flashing, "bundled_image", lambda: Path("firmware.elf"))
+    monkeypatch.setattr(gui_module.flashing, "find_programmer", lambda: None)
+
+    offered = []
+    monkeypatch.setattr(view, "_offer_programmer_download", lambda: offered.append(True))
+    session.calls.clear()
+    view.flash_button.click()
+    app.processEvents()
+
+    assert offered, "it must offer the download rather than proceeding"
+    assert not [call for call in session.calls if call[0] == "flash_firmware"]
+
+
+def test_the_download_points_at_st(window, app):
+    """The URL belongs in one place, so the command line and the dialog cannot disagree."""
+    from stm32_msi import flashing as flashing_module
+
+    assert flashing_module.PROGRAMMER_URL.startswith("https://www.st.com/")
+    assert "stm32cubeprog" in flashing_module.PROGRAMMER_URL
+
+
+def test_a_finished_flash_reports_and_reconnects(window, app):
+    view, session = window
+    connect(view, session, app)
+
+    session.calls.clear()
+    session.flash_finished.emit(True, "running 0.1.0 (abc1234)")
+    app.processEvents()
+    assert "0.1.0" in view.statusBar().currentMessage()
+    assert ("connect", "COM4") in session.calls, "the board restarted, so reconnect"
+
+    session.calls.clear()
+    session.flash_finished.emit(False, "the programmer failed")
+    app.processEvents()
+    assert "Flash failed" in view.statusBar().currentMessage()
+    assert not [call for call in session.calls if call[0] == "connect"]
 
 
 def test_firmware_mismatch_warns_without_blocking_the_session(window, app):

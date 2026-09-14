@@ -1,17 +1,17 @@
-"""Build what a user actually downloads: a wheel, a Windows application, and the firmware.
+"""Build what a user actually downloads.
 
-Two ways in, because the audience has two situations. A machine with Python installed wants
-the wheel. A lab machine where you cannot install Python wants an application that carries
-its own interpreter, which is most of the size and the reason this is not just a wheel.
-
-The firmware image is staged alongside rather than bundled in, so the same image can be
-flashed with scripts/flash.py whichever way the application was installed.
+The headline artifact is one Windows executable that carries its own interpreter and the
+firmware image, so a student on a lab machine downloads a single file, runs it, and can
+flash the board from inside it. A wheel and an sdist are built too, for anyone who would
+rather install it as a Python package, and the firmware image is staged on its own for
+anyone flashing from the command line.
 
     python -m pip install ./desktop[release]
     python scripts/build_release.py
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -23,6 +23,7 @@ REPO = Path(__file__).resolve().parent.parent
 DESKTOP = REPO / "desktop"
 DIST = REPO / "dist"
 FIRMWARE = REPO / "firmware" / "build" / "Release" / "firmware.elf"
+RESOURCES = DESKTOP / "src" / "stm32_msi" / "resources"
 
 
 def version() -> str:
@@ -41,10 +42,15 @@ def build_wheel() -> bool:
 
 
 def build_application(name: str) -> bool:
-    """Freeze the GUI entry point into a folder that carries its own interpreter.
+    """Freeze the GUI into one executable that carries its own interpreter and firmware.
 
-    One folder rather than one file: a single exe unpacks itself on every launch, which is
-    slow for a PySide6 application and confuses antivirus more often.
+    One file rather than one folder: a single download that runs is worth more to someone
+    on a lab machine than a faster start. The bundle does unpack itself to a temporary
+    directory on every launch, but that measured 1.7 s to a visible window, which is a
+    price worth paying for not having to explain a folder.
+
+    The firmware image goes inside it, so the application can flash the board without the
+    user having to find a matching .elf.
     """
     work = DIST / "pyinstaller"
     work.mkdir(parents=True, exist_ok=True)
@@ -64,6 +70,7 @@ def build_application(name: str) -> bool:
             "PyInstaller",
             "--noconfirm",
             "--windowed",
+            "--onefile",
             "--name",
             name,
             "--distpath",
@@ -86,6 +93,16 @@ def build_application(name: str) -> bool:
             "tkinter",
             "--paths",
             str(DESKTOP / "src"),
+            "--icon",
+            str(RESOURCES / "icon.ico"),
+            # The window and taskbar icon, kept at the same relative path the package uses
+            # so one lookup works from source and from a frozen build alike.
+            "--add-data",
+            f"{RESOURCES}{os.pathsep}resources",
+            # Carried inside the executable and unpacked beside the interpreter at run
+            # time, which is where flashing.bundled_image() looks for it.
+            "--add-data",
+            f"{FIRMWARE}{os.pathsep}.",
             str(launcher),
         ],
         REPO,
@@ -93,12 +110,6 @@ def build_application(name: str) -> bool:
     # The work and spec directories are scaffolding. Leaving them in dist/ makes it
     # unclear which folders are the release.
     shutil.rmtree(work, ignore_errors=True)
-    if built:
-        # A release asset is a file, so the folder has to become an archive before it can
-        # be uploaded anywhere.
-        shutil.make_archive(
-            str(DIST / f"{name}-windows"), "zip", root_dir=DIST, base_dir=name
-        )
     return built
 
 

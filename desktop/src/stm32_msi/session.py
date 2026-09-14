@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
 
+from . import flashing
 from .instrument import Instrument
 from .transport import Transport
 
@@ -11,6 +12,7 @@ from .transport import Transport
 class _DeviceWorker(QObject):
     connected = Signal(str, object, object)
     firmware_reported = Signal(object)
+    flash_finished = Signal(bool, str)
     status_changed = Signal(object)
     scope_status_changed = Signal(object)
     capture_ready = Signal(object)
@@ -183,6 +185,21 @@ class _DeviceWorker(QObject):
 
         self._run(arm)
 
+    @Slot(object, str)
+    def flash_firmware(self, image, port) -> None:
+        """Write the firmware, then confirm the board answers.
+
+        The connection is dropped first. Programming resets the board and the verify step
+        needs the port to itself, so holding it open would make both fail.
+        """
+        self.busy_changed.emit(True)
+        try:
+            self._close(True)
+            ok, detail = flashing.run(image=image, port=port or None)
+            self.flash_finished.emit(ok, detail)
+        finally:
+            self.busy_changed.emit(False)
+
     @Slot(float, float)
     def configure_probe(self, frequency_hz, duty_percent) -> None:
         self._run(lambda device: device.configure_probe(int(frequency_hz), duty_percent))
@@ -290,6 +307,7 @@ class _DeviceWorker(QObject):
 class DeviceSession(QObject):
     connected = Signal(str, object, object)
     firmware_reported = Signal(object)
+    flash_finished = Signal(bool, str)
     status_changed = Signal(object)
     scope_status_changed = Signal(object)
     capture_ready = Signal(object)
@@ -316,6 +334,7 @@ class DeviceSession(QObject):
     _read_logic_capture_requested = Signal(object, object)
     _arm_mixed_requested = Signal(str, object, object)
     _configure_probe_requested = Signal(float, float)
+    _flash_requested = Signal(object, str)
     _stop_mixed_requested = Signal()
     _read_mixed_requested = Signal()
 
@@ -339,10 +358,12 @@ class DeviceSession(QObject):
         self._read_logic_capture_requested.connect(self._worker.read_logic_capture)
         self._arm_mixed_requested.connect(self._worker.arm_mixed)
         self._configure_probe_requested.connect(self._worker.configure_probe)
+        self._flash_requested.connect(self._worker.flash_firmware)
         self._stop_mixed_requested.connect(self._worker.stop_mixed)
         self._read_mixed_requested.connect(self._worker.read_mixed_capture)
         self._worker.connected.connect(self.connected)
         self._worker.firmware_reported.connect(self.firmware_reported)
+        self._worker.flash_finished.connect(self.flash_finished)
         self._worker.status_changed.connect(self.status_changed)
         self._worker.scope_status_changed.connect(self.scope_status_changed)
         self._worker.capture_ready.connect(self.capture_ready)
@@ -415,6 +436,9 @@ class DeviceSession(QObject):
 
     def configure_probe(self, frequency_hz: float, duty_percent: float = 50.0) -> None:
         self._configure_probe_requested.emit(frequency_hz, duty_percent)
+
+    def flash_firmware(self, image=None, port: str = "") -> None:
+        self._flash_requested.emit(image, port)
 
     def stop_mixed(self) -> None:
         self._stop_mixed_requested.emit()
